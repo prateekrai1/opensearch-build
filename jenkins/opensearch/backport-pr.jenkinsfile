@@ -1,65 +1,108 @@
-pipeline{
+pipeline {
     agent any
-    environment{
+    environment {
         GITHUB_TOKEN = credentials('github-token')
         REPO_URL = 'https://github.com/opensearch-project/opensearch-build.git'
         REPO_DIR = 'opensearch-build'
     }
-    stages{
-        stage('Determine PR type'){
-           steps{
-               echo 'Determining if the PR is Stalled or Backport..'
-               script{
-                   def prType = determinePRType()
-                   if(prType == 'stalled'){
-                       echo 'Processing stalled PR..'
-                       processStalledPR()
-                   }
-                   else if(prType == 'backport'){
-                       echo 'Processing Backport PR...'
-                       processBackportPR()
-                   }
-                   else{
-                   echo 'PR does not match criteria. Exiting Pipeline.'
-                   }
-               }
-           }
+    stages {
+        stage('Setup') {
+            steps {
+                script {
+                    // Check if essential environment variables are set
+                    if (!GITHUB_TOKEN || !REPO_URL) {
+                        error("Environment variables GITHUB_TOKEN or REPO_URL are not set. Check your Jenkins configuration.")
+                    }
+
+                    // Check if jq is installed
+                    sh "which jq || (echo 'jq is not installed. Please install jq to proceed.' && exit 1)"
+                }
+            }
+        }
+//         stage('Determine PR Type') {
+//             steps {
+//                 script {
+//                     echo 'Determining if the PR is Stalled or Backport...'
+//
+//                     // Fetch PR ID from Jenkins environment variable
+//                     def prId = env.CHANGE_ID
+//                     if (!prId) {
+//                         error("No PR ID found. Ensure this pipeline is triggered by a pull request.")
+//                     }
+//
+//                     // Determine the PR type
+//                     def prType = determinePRType(GITHUB_TOKEN, REPO_URL, prId)
+//                     echo "PR ID: ${prId}"
+//                     echo "PR Type: ${prType}"
+//
+//                     if (prType == 'stalled') {
+//                         echo 'Processing stalled PR...'
+//                         processStalledPR()
+//                     } else if (prType == 'backport') {
+//                         echo 'Processing Backport PR...'
+//                         processBackportPR()
+//                     } else {
+//                         echo 'PR does not match criteria. Exiting pipeline.'
+//                         currentBuild.result = 'SUCCESS'
+//                         return
+//                     }
+//                 }
+//             }
+//         }
+            stage('Clone Repository') {
+                        steps {
+                            sh "git clone ${REPO_URL} ${REPO_DIR}"
+                        }
+            }
+
+            stage('Run PR Management Scripts') {
+                steps {
+                    dir(REPO_DIR) {
+                        sh '''
+                            python3 BackportPRs.py
+                            python3 StalledPRs.py
+                        '''
+                    }
+                }
+            }
+    }
+    post {
+        success {
+            echo 'Pipeline completed successfully.'
+        }
+        failure {
+            echo 'Pipeline failed. Check logs for details.'
         }
     }
-   post{
-       success{
-           echo 'Pipeline completed successfully'
-       }
-       failure{
-           echo 'Pipeline failed. Check logs for details'
-       }
-   }
 }
 
-def determinePRType(token, repoURL, prId){
+def determinePRType(token, repoURL, prId) {
     def result = sh(script: """
+        set -e
         curl -s -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.v3+json" \
-        ${repoURL}/pulls/${prId} | jq '.labels | map(.name)'
+        ${repoURL}/pulls/${prId} | jq -r '.labels[].name'
     """, returnStdout: true).trim()
-    if(result.contains('stalled')){
+
+    if (result.contains('stalled')) {
         return 'stalled'
-    }else if (result.contains('backport')){
+    } else if (result.contains('backport')) {
         return 'backport'
-    }else{
+    } else {
         return null
     }
 }
 
-def processStalledPR(){
+def processStalledPR() {
     echo 'Rebasing stalled PR branch onto target branch...'
     sh """
-    scripts/pr-management/StalledPRs.py --repo $REPO_REPO_URL --token $GITHUB_TOKEN
+    set -e
+    python3 scripts/pr-management/StalledPRs.py --repo ${REPO_URL} --token ${GITHUB_TOKEN}
     """
 }
-
-def processBackportPR(){
-     echo 'Resolving backport PR conflicts...'
-     sh """
-     scripts/pr-management/BackportPRs.py --repo $REPO_URL --token $GITHUB_TOKEN
-     """
+def processBackportPR() {
+    echo 'Resolving backport PR conflicts...'
+    sh """
+    set -e
+    python3 scripts/pr-management/BackportPRs.py --repo ${REPO_URL} --token ${GITHUB_TOKEN}
+    """
 }
