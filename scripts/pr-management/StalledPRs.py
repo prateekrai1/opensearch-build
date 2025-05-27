@@ -22,12 +22,49 @@ def fetch_stalled_prs(owner, repo):
     response.raise_for_status()
     return response.json()["items"]
 
+def resolve_changelog_conflict(file_path):
+    """Resolve Git conflict markers in CHANGELOG.md by merging both sides."""
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    merged_lines = []
+    i = 0
+    while i < len(lines):
+        if lines[i].startswith('<<<<<<<'):
+            i += 1
+            local_changes = []
+            while i < len(lines) and not lines[i].startswith('======='):
+                local_changes.append(lines[i])
+                i += 1
+            i += 1
+            incoming_changes = []
+            while i < len(lines) and not lines[i].startswith('>>>>>>>'):
+                incoming_changes.append(lines[i])
+                i += 1
+            i += 1
+            merged_lines.extend(incoming_changes + local_changes)
+        else:
+            merged_lines.append(lines[i])
+            i += 1
+
+    with open(file_path, 'w') as f:
+        f.writelines(merged_lines)
+
 def rebase_pr(repo_dir, pr_branch, target_branch):
     """Rebase a stalled PR onto the target branch."""
-    subprocess.run(["git","checkout",pr_branch], cwd=repo_dir)
-    subprocess.run(["git","fetch","origin", target_branch], cwd=repo_dir)
-    subprocess.run(["git","rebase",f"origin/{target_branch}"], cwd=repo_dir)
-    subprocess.run(["git","push","--force-with-lease"], cwd=repo_dir)
+    subprocess.run(["git", "checkout", pr_branch], cwd=repo_dir, check=True)
+    subprocess.run(["git", "fetch", "origin", target_branch], cwd=repo_dir, check=True)
+    result = subprocess.run(["git", "rebase", f"origin/{target_branch}"], cwd=repo_dir)
+
+    if result.returncode != 0:
+        conflict_path = os.path.join(repo_dir, "CHANGELOG.md")
+        if os.path.exists(conflict_path):
+            print("Conflict detected in CHANGELOG.md. Resolving...")
+            resolve_changelog_conflict(conflict_path)
+            subprocess.run(["git", "add", "CHANGELOG.md"], cwd=repo_dir, check=True)
+            subprocess.run(["git", "rebase", "--continue"], cwd=repo_dir, check=True)
+
+    subprocess.run(["git", "push", "--force-with-lease"], cwd=repo_dir, check=True)
 
 def main_stalled(owner, repo, repo_dir):
     """Main function to handle stalled PRs"""
