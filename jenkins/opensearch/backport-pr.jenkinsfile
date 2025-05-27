@@ -19,8 +19,8 @@ pipeline {
             steps {
                 dir(REPO_DIR) {
                     sh '''
-                        python3 BackportPRs.py
-                        python3 StalledPRs.py
+                        python3 scripts/pr-management/BackportPRs.py
+                        python3 scripts/pr-management/StalledPRs.py
                     '''
                 }
             }
