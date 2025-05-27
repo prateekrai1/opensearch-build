@@ -6,14 +6,14 @@ pipeline {
         REPO_DIR = 'opensearch-build'
     }
     stages {
-        stage('Install jq') {
-            steps {
-                sh '''
-                 apt-get update
-                 apt-get install -y jq python3 python3-pip
-                '''
-            }
-        }
+//         stage('Install jq') {
+//             steps {
+//                 sh '''
+//                  apt-get update
+//                  apt-get install -y jq python3 python3-pip
+//                 '''
+//             }
+//         }
         stage('Setup') {
             steps {
                 script {
@@ -23,7 +23,7 @@ pipeline {
                     }
 
                     // Check if jq is installed
-                    sh "which jq || (echo 'jq is not installed. Please install jq to proceed.' && exit 1)"
+                    //sh "which jq || (echo 'jq is not installed. Please install jq to proceed.' && exit 1)"
                 }
             }
         }
@@ -84,33 +84,33 @@ pipeline {
     }
 }
 
-def determinePRType(token, repoURL, prId) {
-    def result = sh(script: """
-        set -e
-        curl -s -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.v3+json" \
-        ${repoURL}/pulls/${prId} | jq -r '.labels[].name'
-    """, returnStdout: true).trim()
-
-    if (result.contains('stalled')) {
-        return 'stalled'
-    } else if (result.contains('backport')) {
-        return 'backport'
-    } else {
-        return null
-    }
-}
-
-def processStalledPR() {
-    echo 'Rebasing stalled PR branch onto target branch...'
-    sh """
-    set -e
-    python3 scripts/pr-management/StalledPRs.py --repo ${REPO_URL} --token ${GITHUB_TOKEN}
-    """
-}
-def processBackportPR() {
-    echo 'Resolving backport PR conflicts...'
-    sh """
-    set -e
-    python3 scripts/pr-management/BackportPRs.py --repo ${REPO_URL} --token ${GITHUB_TOKEN}
-    """
-}
+// def determinePRType(token, repoURL, prId) {
+//     def result = sh(script: """
+//         set -e
+//         curl -s -H "Authorization: Bearer ${token}" -H "Accept: application/vnd.github.v3+json" \
+//         ${repoURL}/pulls/${prId} | jq -r '.labels[].name'
+//     """, returnStdout: true).trim()
+//
+//     if (result.contains('stalled')) {
+//         return 'stalled'
+//     } else if (result.contains('backport')) {
+//         return 'backport'
+//     } else {
+//         return null
+//     }
+// }
+//
+// def processStalledPR() {
+//     echo 'Rebasing stalled PR branch onto target branch...'
+//     sh """
+//     set -e
+//     python3 scripts/pr-management/StalledPRs.py --repo ${REPO_URL} --token ${GITHUB_TOKEN}
+//     """
+// }
+// def processBackportPR() {
+//     echo 'Resolving backport PR conflicts...'
+//     sh """
+//     set -e
+//     python3 scripts/pr-management/BackportPRs.py --repo ${REPO_URL} --token ${GITHUB_TOKEN}
+//     """
+// }
