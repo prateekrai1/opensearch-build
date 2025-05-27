@@ -68,6 +68,7 @@ def rebase_pr(repo_dir, pr_branch, target_branch):
 
 def main_stalled(owner, repo, repo_dir):
     """Main function to handle stalled PRs"""
+    print("Stalled PRs script starting...")
     stalled_prs = fetch_stalled_prs(owner,repo)
     for pr in stalled_prs:
         pr_number = pr["number"]

@@ -64,6 +64,7 @@ def cherry_pick_commits(repo_dir, source_branch, target_branch):
 
 def main_backport(owner, repo, repo_dir):
     """Main function to handle backport PRs"""
+    print("Backport PRs script starting...")
     backport_prs = fetch_backport_prs(owner, repo)
     for pr in backport_prs:
         pr_number = pr["number"]
