@@ -7,9 +7,11 @@ pipeline {
     }
     stages {
         stage('Clone Repository') {
-           script {
-                if (!GITHUB_TOKEN || !REPO_URL) {
-                    error("Environment variables GITHUB_TOKEN or REPO_URL are not set. Check your Jenkins configuration.")
+           steps {
+                script {
+                    if (!GITHUB_TOKEN || !REPO_URL) {
+                        error("Environment variables GITHUB_TOKEN or REPO_URL are not set. Check your Jenkins configuration.")
+                    }
                 }
            }
         }
