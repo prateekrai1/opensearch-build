@@ -79,7 +79,6 @@ def main_backport(owner, repo, repo_dir):
             print(f"Rebase failed for Backport PR #{pr_number}. Attempting cherry-pick...")
             cherry_pick_commits(repo_dir, pr_branch, target_branch)
 
-# Add this block to call the main function
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print("Usage: python BackportPRs.py <owner> <repo> <repo_directory>")

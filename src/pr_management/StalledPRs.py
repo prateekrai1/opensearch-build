@@ -79,7 +79,6 @@ def main_stalled(owner, repo, repo_dir):
         print(f"Handling Stalled PR #{pr_number}: {pr_branch} -> {target_branch}")
         rebase_pr(repo_dir, pr_branch, target_branch)
 
-# Add this block to call the main function
 if __name__ == "__main__":
     if len(sys.argv) != 4:
         print("Usage: python StalledPRs.py <owner> <repo> <repo_directory>")
