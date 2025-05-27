@@ -18,8 +18,8 @@ pipeline {
         stage('Run PR Management Scripts') {
             steps {
                     sh '''
-                        python3 scripts/pr-management/BackportPRs.py prateekrai1 OpenSearchFeature16099 OpenSearchFeature16099
-                        python3 scripts/pr-management/StalledPRs.py prateekrai1 OpenSearchFeature16099 OpenSearchFeature16099
+                        python src/pr_management/BackportPRs.py prateekrai1 OpenSearchFeature16099 OpenSearchFeature16099
+                        python src/pr_management/StalledPRs.py prateekrai1 OpenSearchFeature16099 OpenSearchFeature16099
                     '''
             }
         }
