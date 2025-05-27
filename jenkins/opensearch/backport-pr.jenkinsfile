@@ -17,12 +17,10 @@ pipeline {
         }
         stage('Run PR Management Scripts') {
             steps {
-                dir(REPO_DIR) {
                     sh '''
                         python3 scripts/pr-management/BackportPRs.py
                         python3 scripts/pr-management/StalledPRs.py
                     '''
-                }
             }
         }
     }
