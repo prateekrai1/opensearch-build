@@ -2,7 +2,7 @@ pipeline {
     agent any
     environment {
         GITHUB_TOKEN = credentials('github-token')
-        REPO_URL = 'https://github.com/opensearch-project/opensearch-build.git'
+        REPO_URL = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'
         REPO_DIR = 'opensearch-build'
     }
     stages {
