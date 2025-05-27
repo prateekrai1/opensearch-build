@@ -1,6 +1,7 @@
 import os
 import requests
 import subprocess
+import sys # Import sys to access command-line arguments
 
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -78,4 +79,12 @@ def main_stalled(owner, repo, repo_dir):
         print(f"Handling Stalled PR #{pr_number}: {pr_branch} -> {target_branch}")
         rebase_pr(repo_dir, pr_branch, target_branch)
 
-
+# Add this block to call the main function
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: python StalledPRs.py <owner> <repo> <repo_directory>")
+        sys.exit(1)
+    owner = sys.argv[1]
+    repo = sys.argv[2]
+    repo_dir = sys.argv[3]
+    main_stalled(owner, repo, repo_dir)

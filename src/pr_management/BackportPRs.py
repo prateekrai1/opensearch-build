@@ -1,6 +1,7 @@
 import os
 import requests
 import subprocess
+import sys # Import sys to access command-line arguments
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
@@ -78,4 +79,12 @@ def main_backport(owner, repo, repo_dir):
             print(f"Rebase failed for Backport PR #{pr_number}. Attempting cherry-pick...")
             cherry_pick_commits(repo_dir, pr_branch, target_branch)
 
-
+# Add this block to call the main function
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: python BackportPRs.py <owner> <repo> <repo_directory>")
+        sys.exit(1)
+    owner = sys.argv[1]
+    repo = sys.argv[2]
+    repo_dir = sys.argv[3]
+    main_backport(owner, repo, repo_dir)
