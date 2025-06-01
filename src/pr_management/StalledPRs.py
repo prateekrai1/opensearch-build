@@ -1,7 +1,7 @@
 import os
 import requests
 import subprocess
-import sys # Import sys to access command-line arguments
+import sys
 
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -53,6 +53,9 @@ def resolve_changelog_conflict(file_path):
 
 def rebase_pr(repo_dir, pr_branch, target_branch):
     """Rebase a stalled PR onto the target branch."""
+    subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=True)
+
     subprocess.run(["git", "checkout", pr_branch], cwd=repo_dir, check=True)
     subprocess.run(["git", "fetch", "origin", target_branch], cwd=repo_dir, check=True)
     result = subprocess.run(["git", "rebase", f"origin/{target_branch}"], cwd=repo_dir)

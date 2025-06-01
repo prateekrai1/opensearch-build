@@ -1,7 +1,7 @@
 import os
 import requests
 import subprocess
-import sys # Import sys to access command-line arguments
+import sys
 
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
