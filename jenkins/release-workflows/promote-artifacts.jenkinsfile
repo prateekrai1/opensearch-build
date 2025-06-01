@@ -1,0 +1,81 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+
+lib = library(identifier: 'jenkins@9.0.1', retriever: modernSCM([
+    $class: 'GitSCMSource',
+    remote: 'https://github.com/opensearch-project/opensearch-build-libraries.git',
+]))
+
+pipeline {
+    options {
+        timeout(time: 1, unit: 'HOURS')
+    }
+    agent none
+    parameters {
+        choice(
+            choices: ['distribution-build-opensearch', 'distribution-build-opensearch-dashboards'],
+            name: 'DISTRIBUTION_JOB_NAME',
+            description: 'The jenkins job name that is used for building the artifact'
+        )
+        string(
+            defaultValue: '',
+            name: 'DISTRIBUTION_BUILD_NUMBER',
+            description: 'What is the build id of the above DISTRIBUTION_JOB_NAME that you want to promote? (e.g. 123, 136)',
+            trim: true
+        )
+        string(
+            defaultValue: '',
+            name: 'INPUT_MANIFEST',
+            description: 'What is the input manifest of the above DISTRIBUTION_JOB_NAME that you want to promote? (e.g. 1.2.2/opensearch-1.2.2.yml)',
+            trim: true
+        )
+        choice(
+            choices: ['linux', 'windows', 'darwin'],
+            name: 'DISTRIBUTION_PLATFORM',
+            description: 'What is the platform of the distribution?'
+        )
+        choice(
+            choices: ['tar', 'rpm', 'deb', 'zip'],
+            name: 'DISTRIBUTION_NAME',
+            description: 'What is the name of the distribution??'
+        )
+        choice(
+            choices: ['arm64', 'x64'],
+            name: 'DISTRIBUTION_ARCHITECTURE',
+            description: 'What is the architecture of the distribution?'
+        )
+    }
+    stages {
+        stage('promote artifacts') {
+            agent {
+                docker {
+                    label 'Jenkins-Agent-AL2023-X64-M54xlarge-Docker-Host'
+                    image 'opensearchstaging/ci-runner:ci-runner-centos7-opensearch-build-v3'
+                    registryUrl 'https://public.ecr.aws/'
+                    alwaysPull true
+                }
+            }
+            steps {
+                script {
+                    currentBuild.description = "${DISTRIBUTION_BUILD_NUMBER} ${DISTRIBUTION_PLATFORM} ${DISTRIBUTION_ARCHITECTURE} ${DISTRIBUTION_NAME} ${INPUT_MANIFEST}"
+                    promoteArtifacts(
+                        fileActions: [createSha512Checksums(), createSignatureFiles()]
+                    )
+                }
+            }
+            post() {
+                always {
+                    script {
+                        cleanWs disableDeferredWipeout: true, deleteDirs: true
+                    }
+                }
+            }
+        }
+    }
+}

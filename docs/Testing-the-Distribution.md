@@ -21,20 +21,20 @@ Additional arguments:
 |------------------------|-------------------------------------------------------------------------|
 | test-type              | Run tests of a test suite. [integ-test, bwc-test, perf-test]            |
 | test-manifest-path     | Specify a test manifest path.                                           |
-| --paths                | Location of manifest(s).                                                |
+| --paths                | Specify paths for OpenSearch and OpenSearch Dashboards.                                                |
 | --test-run-id          | Unique identifier for a test run.                                       |
 | --component [name ...] | Test a subset of specific components.                                   |
 | --keep                 | Do not delete the temporary working directory on both success or error. |
 | -v, --verbose          | Show more verbose output.                                               |
 
 ### Integration Tests
-In order to run the tests in your local, you can avoid installing the packages with right version by using a docker image. Each test manifest consist of the docker image to run tests on. 
+In order to run the tests in your local, you can avoid installing the packages with right version by using a docker image. Each test manifest consist of the docker image to run tests on. Check the [test manifest](https://github.com/opensearch-project/opensearch-build/blob/main/manifests/2.19.0/opensearch-2.19.0.yml#L8) or [jenkins file](https://github.com/opensearch-project/opensearch-build/blob/main/jenkins/opensearch/integ-test.jenkinsfile#L15-L20) to retrieve the docker images.
 
 ```
   docker run -u root -it opensearchstaging/ci-runner:ci-runner-centos7-opensearch-build-v3 /bin/bash
 ```
 
-Set up the right JAVA_HOME version or node version as per the distribution version and clone this repository to start using testing framework.
+Set up the right JAVA_HOME version (check test manifest to see what version is being used to test the distribution) or node version as per the distribution version and clone this repository to start using testing framework.
 
 
 To run integration tests locally, use below command. This pulls down the built bundle and its manifest file, reads all components of the distribution, and runs integration tests against each component.
@@ -45,7 +45,7 @@ Usage:
 ./test.sh integ-test <test-manifest-path> <target>
 ```
 
-For example, build locally and run integration tests.
+For example, to build the distribution locally and run integration test on locally built distribution:
 
 ```bash
 ./build.sh manifests/1.3.5/opensearch-1.3.5.yml
@@ -53,7 +53,7 @@ For example, build locally and run integration tests.
 ./test.sh integ-test manifests/1.3.5/opensearch-1.3.5-test.yml . # looks for "./builds/opensearch/manifest.yml" and "./dist/opensearch/manifest.yml"
 ```
 
-Or run integration tests against an existing build.
+Or run integration tests against an existing build:
 
 ```bash
 ./test.sh integ-test manifests/1.3.5/opensearch-1.3.5-test.yml --paths opensearch=https://ci.opensearch.org/ci/dbc/distribution-build-opensearch/1.3.5/5960/linux/x64/tar # looks for https://.../builds/opensearch/manifest.yml and https://.../dist/opensearch/manifest.yml
@@ -150,6 +150,8 @@ Once you have added the configuration in the jenkinsfile please raise the PR and
 The `build` workflow automates the process to generate all OpenSearch and OpenSearch Dashboards artifacts, and provide them as distributions to the `test` workflow, which runs exhaustive testing on the artifacts based on the artifact type. The next section talks in detail about the test workflow. See the details below for each type of tests run at the distribution level. All the distribution level test workflows (integ tests, BWC tests and perfomance tests) are run on jenkins.
 
 ### Integration tests
+
+__Note: [OpenSearch CI/CD system](https://build.ci.opensearch.org/) now requires authentication for readOnly access as well. Please proceed to login using your GitHub account.__
 
 The integration tests for OpenSearch are run via [integ-test](https://build.ci.opensearch.org/view/Test/job/integ-test/) job and for OpenSearch-Dashboards via [integ-test-opensearch-dashboards](https://build.ci.opensearch.org/view/Test/job/integ-test-opensearch-dashboards/) job. These jobs are mainly triggered via distribution build jobs after a distribution is created successfully. They are also triggered manually when required such as during releases or via cronjobs.
 The job reads the build artifact composition from the associated manifest files and spins up parallel, independent integrationTest runs for each component built inside the artifact. For instance, if the artifact is a full distribution, which has all OpenSearch plugins, the job will kick off integration test suite for each individual plugin. Each plugin is run on an independent cluster and in independent container. After the test runs are complete, a test-report is generated using [report-workflow](https://github.com/opensearch-project/opensearch-build/tree/main/src/report_workflow). 
