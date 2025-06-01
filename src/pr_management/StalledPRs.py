@@ -67,7 +67,10 @@ def rebase_pr(repo_dir, pr_branch, target_branch):
             resolve_changelog_conflict(conflict_path)
             subprocess.run(["git", "add", "CHANGELOG.md"], cwd=repo_dir, check=True)
             subprocess.run(["git", "rebase", "--continue"], cwd=repo_dir, check=True)
-
+    subprocess.run([
+        "git", "remote", "set-url", "origin",
+        f"https://{GITHUB_TOKEN}@github.com/{owner}/{repo}.git"
+    ], cwd=repo_dir, check=True)
     subprocess.run(["git", "push", "--force-with-lease"], cwd=repo_dir, check=True)
 
 def main_stalled(owner, repo, repo_dir):

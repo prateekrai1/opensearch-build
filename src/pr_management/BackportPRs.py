@@ -54,6 +54,10 @@ def resolve_changelog_conflict(repo_dir, pr_branch, target_branch):
             file.writelines(resolved_changes)
         subprocess.run(["git", "add", "CHANGELOG.md"], cwd=repo_dir)
         subprocess.run(["git", "commit", "-m", "Resolved CHANGELOG.md conflict"], cwd=repo_dir)
+    subprocess.run([
+        "git", "remote", "set-url", "origin",
+        f"https://{GITHUB_TOKEN}@github.com/{owner}/{repo}.git"
+    ], cwd=repo_dir, check=True)
     subprocess.run(["git", "push","--force-with-lease"], cwd=repo_dir)
 
 def cherry_pick_commits(repo_dir, source_branch, target_branch):
