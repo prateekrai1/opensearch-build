@@ -46,6 +46,9 @@ git config --system pack.window 0
 git config --system pack.threads 1
 git config --system core.compression 0
 git config --system protocol.version 1
+git config --system http.schannelCheckRevoke false
+git config --system http.sslBackend openssl
+git config --system http.sslVerify true
 git config --system --list
 # Rename system32 find.exe in case it gets conflicted with POSIX find
 bash.exe -c "mv -v 'C:\\Windows\\System32\\find.exe' 'C:\\Windows\\System32\\find_windows.exe'"
@@ -89,7 +92,7 @@ regedit /s $zlibRegFilePath
 # Temurin jdk does not have all the versions supported on scoop, especially version 14, 20, and above
 # As of now we will mix temurin and openjdk as temurin for production has support policies for fixes and patches
 # We need to make sure we do not mis-install temurin and openjdk with the same version or the distribution build code will have issues
-$jdkVersionList = "temurin8-jdk JAVA8_HOME", "temurin11-jdk JAVA11_HOME", "openjdk14 JAVA14_HOME", "temurin17-jdk JAVA17_HOME", "temurin19-jdk JAVA19_HOME", "openjdk20 JAVA20_HOME", "temurin21-jdk JAVA21_HOME", "temurin23-jdk JAVA23_HOME"
+$jdkVersionList = "temurin8-jdk JAVA8_HOME", "temurin11-jdk JAVA11_HOME", "openjdk14 JAVA14_HOME", "temurin17-jdk JAVA17_HOME", "temurin19-jdk JAVA19_HOME", "openjdk20 JAVA20_HOME", "temurin21-jdk JAVA21_HOME", "temurin23-jdk JAVA23_HOME", "temurin24-jdk JAVA24_HOME"
 Foreach ($jdkVersion in $jdkVersionList)
 {
     $jdkVersion
@@ -102,8 +105,8 @@ Foreach ($jdkVersion in $jdkVersionList)
     [System.Environment]::SetEnvironmentVariable($jdkArray[1], "$JAVA_HOME_TEMP", [System.EnvironmentVariableTarget]::User)
     java -version
 }
-# Switch to temurin11-jdk as it is the widest supported version to build OpenSearch
-scoop reset temurin11-jdk
+# Switch to temurin21-jdk as 3.0.0 is baselined to 21
+scoop reset temurin21-jdk
 $JAVA_HOME_TEMP = [System.Environment]::GetEnvironmentVariable("JAVA_HOME", [System.EnvironmentVariableTarget]::User).replace("\", "/")
 $JAVA_HOME_TEMP
 [System.Environment]::SetEnvironmentVariable('JAVA_HOME', "$JAVA_HOME_TEMP", [System.EnvironmentVariableTarget]::User)

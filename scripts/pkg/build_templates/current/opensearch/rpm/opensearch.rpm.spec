@@ -60,15 +60,15 @@ if [ -d %{buildroot}%{product_dir}/plugins/opensearch-security ]; then
     chmod 0755 %{buildroot}%{product_dir}/plugins/opensearch-security/tools/*
 fi
 # Pre-populate the folders to ensure rpm build success even without all plugins
-mkdir -p %{buildroot}%{product_dir}/performance-analyzer-rca
+#mkdir -p %{buildroot}%{product_dir}/performance-analyzer-rca
 #rm -rf %{buildroot}%{product_dir}/jdk
 # Symlinks (do not symlink config dir as security demo installer has dependency, if no presense it will switch to rpm/deb mode)
 ln -s %{data_dir} %{buildroot}%{product_dir}/data
 ln -s %{log_dir}  %{buildroot}%{product_dir}/logs
 # Pre-populate PA configs if not present
-if [ ! -f %{buildroot}%{data_dir}/rca_enabled.conf ]; then
-    echo 'true' > %{buildroot}%{data_dir}/rca_enabled.conf
-fi
+#if [ ! -f %{buildroot}%{data_dir}/rca_enabled.conf ]; then
+#    echo 'true' > %{buildroot}%{data_dir}/rca_enabled.conf
+#fi
 if [ ! -f %{buildroot}%{data_dir}/performance_analyzer_enabled.conf ]; then
     echo 'true' > %{buildroot}%{data_dir}/performance_analyzer_enabled.conf
 fi
@@ -163,7 +163,7 @@ exit 0
 # Config dirs/files
 %dir %{config_dir}
 %config(noreplace) %{config_dir}/*
-%config(noreplace) %{data_dir}/rca_enabled.conf
+#%config(noreplace) %{data_dir}/rca_enabled.conf
 %config(noreplace) %{data_dir}/performance_analyzer_enabled.conf
 
 # Service files
@@ -189,11 +189,14 @@ exit 0
 %{product_dir}/manifest.yml
 
 # Main dirs
+## agent dir is introduced in 3.0.0-beta1
+## performance-analyzer-rca was removed in 3.0.0-alpha1 due to deprecation
+%{product_dir}/agent
 %{product_dir}/bin
 %{product_dir}/jdk
 %{product_dir}/lib
 %{product_dir}/modules
-%{product_dir}/performance-analyzer-rca
+#%{product_dir}/performance-analyzer-rca
 %{product_dir}/plugins
 
 # Symlinks
@@ -201,6 +204,6 @@ exit 0
 %{product_dir}/logs
 
 %changelog
-* Mon Mar 21 2022 OpenSearch Team <opensearch@amazon.com>
+* Mon Mar 21 2022 OpenSearch Team <release@opensearch.org>
 - Initial package
 

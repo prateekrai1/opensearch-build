@@ -1,0 +1,226 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * The OpenSearch Contributors require contributions made to
+ * this file be licensed under the Apache-2.0 license or a
+ * compatible open source license.
+ */
+lib = library(identifier: 'jenkins@9.1.1', retriever: modernSCM([
+    $class: 'GitSCMSource',
+    remote: 'https://github.com/opensearch-project/opensearch-build-libraries.git',
+]))
+
+pipeline {
+    options {
+        timeout(time: 1, unit: 'HOURS')
+    }
+    agent {
+        docker {
+            label 'Jenkins-Agent-AL2023-X64-M54xlarge-Docker-Host'
+            image 'opensearchstaging/ci-runner:ci-runner-al2-opensearch-build-v1'
+            registryUrl 'https://public.ecr.aws/'
+            alwaysPull true
+        }
+    }
+parameters {
+    activeChoice(
+        name: 'RELEASE_CHORE',
+        choiceType: 'PT_SINGLE_SELECT',
+        description: 'Release chore to carry out',
+        filterLength: 1,
+        filterable: false,
+        randomName: 'choice-parameter-338807851658059',
+        script: groovyScript(
+            fallbackScript: [classpath: [], oldScript: '', sandbox: true, script: 'return ["Unknown chore"]'],
+            script: [classpath: [], oldScript: '', sandbox: true, script: '''return [ "checkReleaseOwners", "checkDocumentation", "checkCodeCoverage", "checkReleaseNotes", "checkReleaseIssues", "addRcDetailsComment", "checkDocumentationPullRequests", "checkIntegTestResultsOverview" ]'''])
+        )
+        reactiveChoice(
+            name: 'ACTION',
+            choiceType: 'PT_SINGLE_SELECT',
+            description: 'Release chore action',
+            filterLength: 1,
+            filterable: false,
+            randomName: 'choice-parameter-338807853238106',
+            referencedParameters: 'RELEASE_CHORE',
+            script: groovyScript(
+                fallbackScript: [classpath: [], oldScript: '', sandbox: true, script: ' return ["Unknown action"]'],
+                script: [classpath: [], oldScript: '', sandbox: true, script:
+                '''if (RELEASE_CHORE == "checkReleaseOwners") {
+                    return ["check", "request", "assign" ]
+                    } else if (RELEASE_CHORE == "checkDocumentation") {
+                    return ["check", "notify"]
+                    } else if (RELEASE_CHORE == "checkCodeCoverage") {
+                    return ["check", "notify"]
+                    } else if (RELEASE_CHORE == "checkReleaseNotes") {
+                    return ["check", "notify"]
+                    } else if (RELEASE_CHORE == "checkReleaseIssues") {
+                    return ["check", "create"]
+                    } else if (RELEASE_CHORE == "checkDocumentationPullRequests") {
+                    return ["check"]
+                    } else if (RELEASE_CHORE == "checkIntegTestResultsOverview") {
+                    return ["check"]
+                    } else if (RELEASE_CHORE == "addRcDetailsComment") {
+                    return ["add"]
+                    }
+                    else {
+                    return ["Unknown chore"]
+                    }'''])
+        )
+        string(
+            name: 'RELEASE_VERSION',
+            description: 'Release version to be used for the release chore',
+            trim: true
+        )
+        string(
+            name: 'GIT_LOG_DATE',
+            description: 'Enter data to check commits for release notes in format yyyy-mm-dd, example 2022-07-26.',
+            trim: true
+        )
+
+    }
+    stages {
+        stage('Parameters Check') {
+            steps {
+                script {
+                    if (params.RELEASE_VERSION.isEmpty()) {
+                        currentBuild.result = 'ABORTED'
+                        error('RELEASE_VERSION parameter cannot be empty!')
+                    }
+                    currentBuild.description = "${params.RELEASE_CHORE}/${params.ACTION}/${params.RELEASE_VERSION}"
+                }
+            }
+        }
+        stage('addRcDetailsComment') {
+            when {
+                expression { params.RELEASE_CHORE == 'addRcDetailsComment' }
+            }
+            steps {
+                script {
+                    addRcDetailsComment(
+                        version: "${params.RELEASE_VERSION}"
+                        )
+                }
+            }
+        }
+        stage('checkReleaseOwners') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkReleaseOwners' }
+            }
+            steps {
+                script {
+                    checkRequestAssignReleaseOwners(
+                        inputManifest: [
+                            "manifests/${params.RELEASE_VERSION}/opensearch-${params.RELEASE_VERSION}.yml",
+                            "manifests/${params.RELEASE_VERSION}/opensearch-dashboards-${params.RELEASE_VERSION}.yml"
+                            ],
+                        action: "${params.ACTION}",
+                        )
+                }
+            }
+        }
+        stage('checkDocumentationIssues') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkDocumentation' }
+            }
+            steps {
+                script {
+                    checkDocumentationIssues(
+                        version: "${params.RELEASE_VERSION}",
+                        action: "${params.ACTION}",
+                        )
+                }
+            }
+        }
+        stage('checkCodeCoverage') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkCodeCoverage' }
+            }
+            steps {
+                script {
+                    checkCodeCoverage(
+                        inputManifest: [
+                            "manifests/${params.RELEASE_VERSION}/opensearch-${params.RELEASE_VERSION}.yml",
+                            "manifests/${params.RELEASE_VERSION}/opensearch-dashboards-${params.RELEASE_VERSION}.yml"
+                            ],
+                        action: "${params.ACTION}",
+                        )
+                }
+            }
+        }
+        stage('checkReleaseNotes') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkReleaseNotes' }
+            }
+            steps {
+                script {
+                    if (params.GIT_LOG_DATE.isEmpty()) {
+                        currentBuild.result = 'ABORTED'
+                        error('GIT_LOG_DATE parameter cannot be empty for checkReleaseNotes')
+                    }
+                    sh """
+                        #!/bin/bash
+                        set +e
+                        ./release_notes.sh check manifests/${params.RELEASE_VERSION}/opensearch-${params.RELEASE_VERSION}.yml manifests/${params.RELEASE_VERSION}/opensearch-dashboards-${params.RELEASE_VERSION}.yml --date ${params.GIT_LOG_DATE} --output ${WORKSPACE}/table.md
+                    """
+                    checkReleaseNotes(
+                        version: "${params.RELEASE_VERSION}",
+                        dataTable: "${WORKSPACE}/table.md",
+                        action: "${params.ACTION}"
+                        )
+                }
+            }
+        }
+        stage('checkReleaseIssues') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkReleaseIssues' }
+            }
+            steps {
+                script {
+                    checkReleaseIssues(
+                        version: "${params.RELEASE_VERSION}",
+                        inputManifest: [
+                            "manifests/${params.RELEASE_VERSION}/opensearch-${params.RELEASE_VERSION}.yml",
+                            "manifests/${params.RELEASE_VERSION}/opensearch-dashboards-${params.RELEASE_VERSION}.yml"
+                            ],
+                        action: "${params.ACTION}",
+                        )
+                }
+            }
+        }
+        stage('checkDocumentationPullRequests') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkDocumentationPullRequests' }
+            }
+            steps {
+                script {
+                    checkDocumentationPullRequests(
+                        version: "${params.RELEASE_VERSION}"
+                        )
+                }
+            }
+        }
+        stage('checkIntegTestResultsOverview') {
+            when {
+                expression { params.RELEASE_CHORE == 'checkIntegTestResultsOverview' }
+            }
+            steps {
+                script {
+                    checkIntegTestResultsOverview(
+                        inputManifest: [
+                            "manifests/${params.RELEASE_VERSION}/opensearch-${params.RELEASE_VERSION}.yml",
+                            "manifests/${params.RELEASE_VERSION}/opensearch-dashboards-${params.RELEASE_VERSION}.yml"
+                            ]
+                        )
+                }
+            }
+        }
+    }
+    post() {
+        always {
+            script {
+                postCleanup()
+            }
+        }
+    }
+}

@@ -18,7 +18,7 @@ class TestMavenSignReleaseJob extends BuildPipelineTest {
 
         helper.registerSharedLibrary(
             library().name('jenkins')
-                .defaultVersion('1.0.4')
+                .defaultVersion('9.1.2')
                 .allowOverride(true)
                 .implicit(true)
                 .targetPath('vars')

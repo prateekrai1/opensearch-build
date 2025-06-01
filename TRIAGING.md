@@ -1,4 +1,4 @@
-<img src="https://opensearch.org/assets/img/opensearch-logo-themed.svg" height="64px">
+<img src="https://docs.opensearch.org/assets/img/opensearch-logo-themed.svg" height="64px">
 
 The maintainers of the OpenSearch-build Repo seek to promote an inclusive and engaged community of contributors. In order to facilitate this, bi-weekly triage meetings are open-to-all and attendance is encouraged for anyone who hopes to contribute, discuss an issue, or learn more about the project. To learn more about contributing to the OpenSearch-build Repo visit the [Contributing](./CONTRIBUTING.md) documentation.
 
@@ -33,6 +33,7 @@ Meetings are 45 minutes and structured as follows:
     1. [ansible-playbook](https://github.com/opensearch-project/ansible-playbook)
     1. [opensearch-cluster-cdk](https://github.com/opensearch-project/opensearch-cluster-cdk)
     1. [opensearch-devops](https://github.com/opensearch-project/opensearch-devops)
+    1. [automation-app](https://github.com/opensearch-project/automation-app)
 4. Member Requests: Opportunity for any meeting member to ask for consideration of an issue or pull request.
 5. Untriaged Items: Review any [issues](https://github.com/orgs/opensearch-project/projects/208/views/2) that might have had the 'untriaged' label removed but require additional triage discussion.
 6. Open Discussion: Allow for members of the meeting to surface any topics without issues filed or pull request created.

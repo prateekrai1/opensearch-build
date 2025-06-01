@@ -17,7 +17,7 @@ def docker_images = [
     "rpm": "opensearchstaging/ci-runner:ci-runner-almalinux8-systemd-base-integtest-v1",
     "yum": "opensearchstaging/ci-runner:ci-runner-almalinux8-systemd-base-integtest-v1",
     "zip": "opensearchstaging/ci-runner:ci-runner-windows2019-opensearch-build-v1",
-    "deb": "opensearchstaging/ci-runner:ci-runner-ubuntu2004-systemd-base-integtest-v3"
+    "deb": "opensearchstaging/ci-runner:ci-runner-ubuntu2404-systemd-base-integtest-v1"
 ]
 
 def docker_args = [
@@ -205,7 +205,7 @@ pipeline {
                             }
                             validateDistributions["${local_distribution}-${local_architecture}"] = {
                                 // Using scripted pipelines to trigger dynamic parallel stages
-                                timeout(time: 30) {
+                                timeout(time: 1, unit: 'HOURS') {
                                     if ("${local_distribution}" == "docker"){
                                         node(agent_nodes_docker["$local_architecture"]) {
                                             try {
@@ -233,6 +233,7 @@ pipeline {
                                         }
                                     } else {
                                         node(agent_nodes["${local_platform}_${local_architecture}"]) {
+                                            docker.image(docker_images["$local_distribution"]).pull() // always pull latest
                                             docker.withRegistry('https://public.ecr.aws/') {
                                                 docker.image(docker_images["$local_distribution"]).inside(docker_args["$local_distribution"]) {
                                                     try {
@@ -240,26 +241,27 @@ pipeline {
 
                                                             unstash "validate-artifacts-$BUILD_NUMBER"
 
-                                                            if (VERSION) {
+                                                            retry(2) {
+                                                                if (VERSION) {
+                                                                    validateArtifacts(
+                                                                        version: "$VERSION",
+                                                                        distribution: "${local_distribution}",
+                                                                        arch: "${local_architecture}",
+                                                                        platform: "${local_platform}",
+                                                                        os_build_number: "$OS_BUILD_NUMBER",
+                                                                        osd_build_number: "$OSD_BUILD_NUMBER",
+                                                                        projects: "$PROJECTS",
+                                                                        artifact_type: "$ARTIFACT_TYPE",
+                                                                        allow_http: params.ALLOW_HTTP
+                                                                    )
+                                                                }
+                                                                else {
 
-                                                                validateArtifacts(
-                                                                    version: "$VERSION",
-                                                                    distribution: "${local_distribution}",
-                                                                    arch: "${local_architecture}",
-                                                                    platform: "${local_platform}",
-                                                                    os_build_number: "$OS_BUILD_NUMBER",
-                                                                    osd_build_number: "$OSD_BUILD_NUMBER",
-                                                                    projects: "$PROJECTS",
-                                                                    artifact_type: "$ARTIFACT_TYPE",
-                                                                    allow_http: params.ALLOW_HTTP
-                                                                )
-                                                            }
-                                                            else {
-
-                                                                validateArtifacts(
-                                                                    file_path: "$FILEPATH",
-                                                                    allow_http: params.ALLOW_HTTP
-                                                                )
+                                                                    validateArtifacts(
+                                                                        file_path: "$FILEPATH",
+                                                                        allow_http: params.ALLOW_HTTP
+                                                                    )
+                                                                }
                                                             }
                                                         }
                                                     } catch (e) {

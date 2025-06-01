@@ -25,12 +25,13 @@ class ValidateYum(Validation, DownloadUtils):
     def installation(self) -> bool:
         try:
             execute('sudo rpm --import https://artifacts.opensearch.org/publickeys/opensearch.pgp', str(self.tmp_dir.path), True, False)
+            execute('sudo rpm --import https://artifacts.opensearch.org/publickeys/opensearch-release.pgp', str(self.tmp_dir.path), True, False)
             for project in self.args.projects:
                 execute(f'sudo yum remove {project} -y', ".")
                 logging.info('Removed previous versions of Opensearch')
                 urllink = f"{self.args.file_path.get(project)} -o /etc/yum.repos.d/{os.path.basename(self.args.file_path.get(project))}"
                 execute(f'sudo curl -SL {urllink}', ".")
-                execute(f"sudo env OPENSEARCH_INITIAL_ADMIN_PASSWORD={get_password(str(self.args.version))} yum install '{project}-{self.args.version}' -y", ".")
+                execute(f"sudo env OPENSEARCH_INITIAL_ADMIN_PASSWORD={get_password(str(self.args.version))} yum install '{project}-{self.args.version.replace('-', '.')}' -y", ".")
 
         except:
             raise Exception('Failed to install Opensearch')
