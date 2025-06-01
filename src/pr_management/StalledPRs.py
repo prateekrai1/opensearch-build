@@ -66,6 +66,9 @@ def rebase_pr(repo_dir, pr_branch, target_branch):
             print("Conflict detected in CHANGELOG.md. Resolving...")
             resolve_changelog_conflict(conflict_path)
             subprocess.run(["git", "add", "CHANGELOG.md"], cwd=repo_dir, check=True)
+            subprocess.run(["git", "config", "--global", "user.name", "prateekrai1"], cwd=repo_dir, check=True)
+            subprocess.run(["git", "config", "--global", "user.email", "prateekr651@gmail.com"], cwd=repo_dir,
+                           check=True)
             subprocess.run(["git", "rebase", "--continue"], cwd=repo_dir, check=True)
     subprocess.run([
         "git", "remote", "set-url", "origin",
