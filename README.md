@@ -193,6 +193,5 @@ This project is licensed under the [Apache v2.0 License](LICENSE.txt).
 
 ## Copyright
 
-Copyright OpenSearch Contributors. See [NOTICE](NOTICE) for details.
-N e w   c o n t e n t   i n   m a i n  
+Copyright OpenSearch Contributors. See [NOTICE](NOTICE) for details. 
  
