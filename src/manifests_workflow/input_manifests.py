@@ -32,7 +32,7 @@ class InputManifests(Manifests):
         super().__init__(InputManifest, InputManifests.files(self.prefix))
 
     @classmethod
-    def manifests_path(self) -> str:
+    def manifests_path(self) -> str:  # type: ignore[override]
         return os.path.realpath(os.path.join(os.path.dirname(__file__), "..", "..", "manifests"))
 
     @classmethod
@@ -166,7 +166,7 @@ class InputManifests(Manifests):
         manifest_dir = os.path.join(self.manifests_path(), version)
         os.makedirs(manifest_dir, exist_ok=True)
         for manifest in manifests:
-            if manifest.__class__.__name__ == 'TestManifest':
+            if manifest.__class__.__name__.startswith('TestManifest'):
                 manifest_path = os.path.join(manifest_dir, f"{self.prefix}-{version}-test.yml")
                 logging.info(f"Wrote {manifest_path} as the new test manifest")
             else:
@@ -224,14 +224,10 @@ class InputManifests(Manifests):
                 data = yaml.load(f)
 
             version_entry = []
-            major_version_entry = version.split(".")[0] + ".x"
             minor_version_entry = version.rsplit(".", 1)[0]
             if minor_version_entry not in data["jobs"]["plugin-version-increment-sync"]["strategy"]["matrix"]["branch"]:
                 logging.info(f"Adding {minor_version_entry} to {workflow_file}")
                 version_entry.append(minor_version_entry)
-            if major_version_entry not in data["jobs"]["plugin-version-increment-sync"]["strategy"]["matrix"]["branch"]:
-                logging.info(f"Adding {major_version_entry} to {workflow_file}")
-                version_entry.append(major_version_entry)
 
             if version_entry:
                 branch_list = list(data["jobs"]["plugin-version-increment-sync"]["strategy"]["matrix"]["branch"])

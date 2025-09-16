@@ -7,10 +7,15 @@
  * compatible open source license.
  */
 
-lib = library(identifier: 'jenkins@9.3.0', retriever: modernSCM([
+lib = library(identifier: 'jenkins@9.6.0', retriever: modernSCM([
     $class: 'GitSCMSource',
     remote: 'https://github.com/opensearch-project/opensearch-build-libraries.git',
 ]))
+
+def secret_github_bot = [
+    [envVar: 'GITHUB_USER', secretRef: 'op://opensearch-infra-secrets/github-bot/ci-bot-username'],
+    [envVar: 'GITHUB_TOKEN', secretRef: 'op://opensearch-infra-secrets/github-bot/ci-bot-token']
+]
 
 pipeline {
     options {
@@ -21,9 +26,6 @@ pipeline {
         AGENT_LINUX_X64 = 'Jenkins-Agent-AL2023-X64-M54xlarge-Docker-Host'
         AGENT_LINUX_ARM64 = 'Jenkins-Agent-AL2023-Arm64-M6g4xlarge-Docker-Host'
         AGENT_WINDOWS_X64 = 'Jenkins-Agent-Windows2019-X64-M54xlarge-Docker-Host'
-        IMAGE_LINUX_RPM = 'opensearchstaging/ci-runner:ci-runner-almalinux8-opensearch-build-v1' // required for rpm to create digest sha256 correctly with rpm 4.12+, still define here for 1.x version as 2.x+ moved to rockylinux8, later almalinux8, already
-        IMAGE_LINUX_DEB = 'opensearchstaging/ci-runner:ci-runner-ubuntu2404-opensearch-build-v1' // required for deb to create pkg using debmake/debuild/debhelper
-        IMAGE_WINDOWS_ZIP = 'opensearchstaging/ci-runner:ci-runner-windows2019-opensearch-build-v1' // required for windows to build zip distribution
     }
     parameters {
         string(
@@ -134,9 +136,36 @@ pipeline {
                         currentBuild.result = 'ABORTED'
                         error("Input manifest was not provided or not found at manifests/${INPUT_MANIFEST}.")
                     }
+
                     echo('Detect Docker Images and Related Parameters')
-                    dockerAgent = detectDockerAgent()
-                    env.javaVersionNumber = dockerAgent.javaVersion.replaceAll('[^0-9]', '') // Only get number
+                    dockerAgentLinuxTar = detectDockerAgent(
+                        distribution: "tar",
+                        platform: "linux"
+                    )
+                    dockerAgentLinuxDeb = detectDockerAgent(
+                        distribution: "deb",
+                        platform: "linux"
+                    )
+                    dockerAgentLinuxRpm = detectDockerAgent(
+                        distribution: "rpm",
+                        platform: "linux"
+                    )
+                    dockerAgentWindowsZip = detectDockerAgent(
+                        distribution: "zip",
+                        platform: "windows"
+                    )
+                    echo('Print Image Information')
+                    [
+                        linux_tar: dockerAgentLinuxTar,
+                        linux_deb: dockerAgentLinuxDeb,
+                        linux_rpm: dockerAgentLinuxRpm,
+                        windows_zip: dockerAgentWindowsZip
+                    ].each { name, agent ->
+                        echo("${name} Image: ${agent.image}, Args: ${agent.args}")
+                    }
+
+                    env.javaVersionNumber = dockerAgentWindowsZip.javaVersion.replaceAll('[^0-9]', '') // Only get number
+                    echo("Windows Java Version: ${env.javaVersionNumber}")
                     currentBuild.description = INPUT_MANIFEST
 
                     paramType = [
@@ -205,8 +234,8 @@ pipeline {
                     agent {
                         docker {
                             label AGENT_LINUX_X64
-                            image dockerAgent.image
-                            args dockerAgent.args
+                            image dockerAgentLinuxTar.image
+                            args dockerAgentLinuxTar.args
                             registryUrl 'https://public.ecr.aws/'
                             alwaysPull true
                         }
@@ -289,8 +318,8 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_X64
-                                    image dockerAgent.image
-                                    args dockerAgent.args
+                                    image dockerAgentLinuxTar.image
+                                    args dockerAgentLinuxRpm.args
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -325,7 +354,7 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_X64
-                                    image IMAGE_LINUX_RPM
+                                    image dockerAgentLinuxRpm.image
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -405,8 +434,8 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_X64
-                                    image dockerAgent.image
-                                    args dockerAgent.args
+                                    image dockerAgentLinuxTar.image
+                                    args dockerAgentLinuxDeb.args
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -441,7 +470,7 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_X64
-                                    image IMAGE_LINUX_DEB
+                                    image dockerAgentLinuxDeb.image
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -518,8 +547,8 @@ pipeline {
                     agent {
                         docker {
                             label AGENT_LINUX_ARM64
-                            image dockerAgent.image
-                            args dockerAgent.args
+                            image dockerAgentLinuxTar.image
+                            args dockerAgentLinuxTar.args
                             registryUrl 'https://public.ecr.aws/'
                             alwaysPull true
                         }
@@ -599,8 +628,8 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_ARM64
-                                    image dockerAgent.image
-                                    args dockerAgent.args
+                                    image dockerAgentLinuxTar.image
+                                    args dockerAgentLinuxRpm.args
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -635,7 +664,7 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_ARM64
-                                    image IMAGE_LINUX_RPM
+                                    image dockerAgentLinuxRpm.image
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -716,8 +745,8 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_ARM64
-                                    image dockerAgent.image
-                                    args dockerAgent.args
+                                    image dockerAgentLinuxTar.image
+                                    args dockerAgentLinuxDeb.args
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -752,7 +781,7 @@ pipeline {
                             agent {
                                 docker {
                                     label AGENT_LINUX_ARM64
-                                    image IMAGE_LINUX_DEB
+                                    image dockerAgentLinuxDeb.image
                                     registryUrl 'https://public.ecr.aws/'
                                     alwaysPull true
                                 }
@@ -830,7 +859,7 @@ pipeline {
                     agent {
                         docker {
                             label AGENT_WINDOWS_X64
-                            image IMAGE_WINDOWS_ZIP
+                            image dockerAgentWindowsZip.image
                             registryUrl 'https://public.ecr.aws/'
                             alwaysPull true
                         }
@@ -839,7 +868,9 @@ pipeline {
                         script {
                             retry(3) {
                                 echo("Switching to Java ${env.javaVersionNumber} on Windows Docker Container")
-                                sh("scoop reset `scoop list jdk | cut -d ' ' -f1 | grep ${env.javaVersionNumber} | head -1`")
+                                bat """
+                                    bash -c "scoop reset `scoop list jdk | cut -d ' ' -f1 | grep ${env.javaVersionNumber} | head -1`"
+                                """
                                 def buildManifestObj = buildAssembleUpload(
                                     componentName: "${COMPONENT_NAME}",
                                     inputManifest: "manifests/${INPUT_MANIFEST}",
@@ -847,7 +878,7 @@ pipeline {
                                     architecture: 'x64',
                                     distribution: 'zip',
                                     continueOnError: params.CONTINUE_ON_ERROR,
-                                    incremental: params.INCREMENTAL,
+                                    incremental: false,
                                     previousBuildId: params.PREVIOUS_BUILD_ID
                                 )
                                 String buildManifestUrl = buildManifestObj.getUrl(JOB_NAME, BUILD_NUMBER)
@@ -909,8 +940,8 @@ pipeline {
                     agent {
                         docker {
                             label AGENT_LINUX_X64
-                            image dockerAgent.image
-                            args dockerAgent.args
+                            image dockerAgentLinuxTar.image
+                            args dockerAgentLinuxTar.args
                             registryUrl 'https://public.ecr.aws/'
                             alwaysPull true
                         }
@@ -973,6 +1004,17 @@ pipeline {
                 script {
                     if (params.RC_NUMBER.toInteger() > 0) {
                         triggerDistributionValidationWorkflow(env.revision)
+                        triggerNightlyPlayground()
+                    }
+                    postCleanup()
+                }
+            }
+        }
+        unstable {
+            node(AGENT_LINUX_X64) {
+                script {
+                    if (params.RC_NUMBER.toInteger() > 0) {
+                        triggerNightlyPlayground()
                     }
                     postCleanup()
                 }
@@ -1023,7 +1065,8 @@ def triggerSmokeTests(String buildManifestUrl, String platform, String distribut
                 wait: false,
                 parameters: [
                     string(name: 'TEST_MANIFEST', value: TEST_MANIFEST),
-                    string(name: 'BUILD_MANIFEST_URL', value: buildManifestUrl)
+                    string(name: 'BUILD_MANIFEST_URL', value: buildManifestUrl),
+                    string(name: 'RC_NUMBER', value: RC_NUMBER)
                 ]
     }
 }
@@ -1057,6 +1100,24 @@ def triggerDistributionValidationWorkflow(String version) {
                 string(name: 'PROJECTS', value: 'opensearch'),
                 string(name: 'ARTIFACT_TYPE', value: 'staging')
             ]
+}
+
+def triggerNightlyPlayground() {
+    def secret_github_bot = [
+        [envVar: 'GITHUB_USER', secretRef: 'op://opensearch-infra-secrets/github-bot/ci-bot-username'],
+        [envVar: 'GITHUB_TOKEN', secretRef: 'op://opensearch-infra-secrets/github-bot/ci-bot-token']
+    ]
+    withSecrets(secrets: secret_github_bot){
+        println("Triggering nightly playground workflow.")
+        try {
+            sh(
+                script: "gh workflow run nightly-playground-trigger.yml -R opensearch-project/opensearch-devops --ref main",
+                returnStdout: true
+            )
+        } catch (Exception ex) {
+            println("Error in triggering nightly playground workflow. ${ex.getMessage()}")
+        }
+    }
 }
 
 def verifyParameterPlatformDistribution(String paramName, String allowedValue) {

@@ -7,7 +7,7 @@
  * compatible open source license.
  */
 
-lib = library(identifier: 'jenkins@1.0.4', retriever: modernSCM([
+lib = library(identifier: 'jenkins@9.6.0', retriever: modernSCM([
     $class: 'GitSCMSource',
     remote: 'https://github.com/opensearch-project/opensearch-build-libraries.git',
 ]))
@@ -23,9 +23,9 @@ pipeline {
     }
     triggers {
         parameterizedCron '''
-            H 1 * * * %INPUT_MANIFEST=3.1.0/opensearch-dashboards-3.1.0.yml;TARGET_JOB_NAME=distribution-build-opensearch-dashboards;BUILD_PLATFORM=linux windows;BUILD_DISTRIBUTION=tar rpm deb zip;TEST_MANIFEST=3.1.0/opensearch-dashboards-3.1.0-test.yml;TEST_PLATFORM=linux;TEST_DISTRIBUTION=tar
-            H 1 * * * %INPUT_MANIFEST=2.19.3/opensearch-2.19.3.yml;TARGET_JOB_NAME=distribution-build-opensearch;BUILD_PLATFORM=linux windows;BUILD_DISTRIBUTION=tar rpm deb zip;TEST_MANIFEST=2.19.3/opensearch-2.19.3-test.yml;TEST_PLATFORM=linux;TEST_DISTRIBUTION=tar
-            H 1 * * * %INPUT_MANIFEST=3.1.0/opensearch-3.1.0.yml;TARGET_JOB_NAME=distribution-build-opensearch;BUILD_PLATFORM=linux windows;BUILD_DISTRIBUTION=tar rpm deb zip;TEST_MANIFEST=3.1.0/opensearch-3.1.0-test.yml;TEST_PLATFORM=linux;TEST_DISTRIBUTION=tar
+            H 1 * * * %INPUT_MANIFEST=2.19.4/opensearch-2.19.4.yml;TARGET_JOB_NAME=distribution-build-opensearch;BUILD_PLATFORM=linux windows;BUILD_DISTRIBUTION=tar rpm deb zip;TEST_MANIFEST=2.19.4/opensearch-2.19.4-test.yml;TEST_PLATFORM=linux;TEST_DISTRIBUTION=tar
+            H 1 * * * %INPUT_MANIFEST=3.3.0/opensearch-dashboards-3.3.0.yml;TARGET_JOB_NAME=distribution-build-opensearch-dashboards;BUILD_PLATFORM=linux windows;BUILD_DISTRIBUTION=tar rpm deb zip;TEST_MANIFEST=3.3.0/opensearch-dashboards-3.3.0-test.yml;TEST_PLATFORM=linux;TEST_DISTRIBUTION=tar
+            H 1 * * * %INPUT_MANIFEST=3.3.0/opensearch-3.3.0.yml;TARGET_JOB_NAME=distribution-build-opensearch;BUILD_PLATFORM=linux windows;BUILD_DISTRIBUTION=tar rpm deb zip
         '''
     }
     parameters {
@@ -82,7 +82,7 @@ pipeline {
             }
             steps {
                 script {
-                    dockerAgent = detectDockerAgent()
+                    dockerAgent = detectDockerAgent()  // default to linux-tar in INPUT_MANIFEST schemaVersion >= 1.2
                 }
             }
         }

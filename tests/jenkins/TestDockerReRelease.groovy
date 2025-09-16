@@ -25,7 +25,7 @@ class TestDockerReRelease extends BuildPipelineTest {
 
         helper.registerSharedLibrary(
             library().name('jenkins')
-                .defaultVersion('6.2.0')
+                .defaultVersion('9.6.0')
                 .allowOverride(true)
                 .implicit(true)
                 .targetPath('vars')
@@ -70,7 +70,7 @@ class TestDockerReRelease extends BuildPipelineTest {
         assertThat(getCommandExecutions('build', ''), hasItem('{job=docker-build, propagate=true, wait=true, parameters=[null, null, null]}'))
         assertThat(getCommandExecutions('build', ''), hasItem('{job=docker-scan, propagate=true, wait=true, parameters=[null]}'))
         assertThat(getCommandExecutions('build', ''), hasItem('{job=docker-promotion, propagate=true, wait=true, parameters=[null, null, null]}'))
-        assertThat(getCommandExecutions('parameterizedCron', ''), hasItem('\n            H 19 15 * * %PRODUCT=opensearch;TAG=1\n            H 19 15 * * %PRODUCT=opensearch-dashboards;TAG=1\n            H 19 15 * * %PRODUCT=opensearch;TAG=2\n            H 19 15 * * %PRODUCT=opensearch-dashboards;TAG=2\n        '))
+        assertThat(getCommandExecutions('parameterizedCron', ''), hasItem('\n            H 19 15 * * %PRODUCT=opensearch;TAG=3\n            H 19 15 * * %PRODUCT=opensearch-dashboards;TAG=3\n            H 19 15 * * %PRODUCT=opensearch;TAG=2\n            H 19 15 * * %PRODUCT=opensearch-dashboards;TAG=2\n        '))
 
     }
 

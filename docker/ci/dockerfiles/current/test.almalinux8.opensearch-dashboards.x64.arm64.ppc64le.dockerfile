@@ -35,8 +35,8 @@ RUN groupadd -g 1000 $CONTAINER_USER && \
     chown -R 1000:1000 $CONTAINER_USER_HOME
 
 # install yq
-COPY --chown=0:0 config/yq-setup.sh /tmp/
-RUN /tmp/yq-setup.sh
+COPY --chown=0:0 config/yq-setup.sh config/op-setup.sh /tmp/
+RUN /tmp/yq-setup.sh && /tmp/op-setup.sh
 
 # Change User
 USER $CONTAINER_USER
@@ -46,8 +46,8 @@ WORKDIR $CONTAINER_USER_HOME
 # nvm environment variables
 ENV NVM_DIR $CONTAINER_USER_HOME/.nvm
 ENV NODE_VERSION 20.18.3
-ENV CYPRESS_VERSION 12.13.0
-ARG CYPRESS_VERSION_LIST="5.6.0 9.5.4 12.13.0"
+ENV CYPRESS_VERSION 9.5.4
+ARG CYPRESS_VERSION_LIST="5.6.0 9.5.4"
 ENV CYPRESS_LOCATION $CONTAINER_USER_HOME/.cache/Cypress/$CYPRESS_VERSION
 ENV CYPRESS_LOCATION_954 $CONTAINER_USER_HOME/.cache/Cypress/9.5.4
 # install nvm
@@ -66,7 +66,7 @@ COPY --chown=$CONTAINER_USER:$CONTAINER_USER config/yarn-version.sh /tmp
 RUN npm install -g yarn@`/tmp/yarn-version.sh main`
 # Add legacy cypress@5.6.0 for 1.x line
 # Add legacy cypress@9.5.4 for pre-2.8.0 releases
-# Add latest cypress@12.13.0 for post-2.8.0 releases
+# Add latest cypress@12.13.0 for post-2.8.0 releases, disable in 3.2.0 release due to install error https://github.com/cypress-io/cypress/issues/4595
 RUN for cypress_version in $CYPRESS_VERSION_LIST; do npm install -g cypress@$cypress_version && npm cache verify; done
 
 # Need root to get pass the build due to chrome sandbox needs to own by the root
@@ -90,6 +90,17 @@ RUN dnf clean all && dnf install -y 'dnf-command(config-manager)' && \
     dnf update -y && \
     dnf install -y which curl git gnupg2 tar net-tools procps-ng python39 python39-devel python39-pip zip unzip
 
+# Replace default curl 7.61.1 on Almalinux8 with 7.75+ version to support aws-sigv4
+# https://github.com/curl/curl/commit/08e8455dddc5e48e58a12ade3815c01ae3da3b64
+# https://curl.se/changes.html#7_75_0
+RUN ARCH=`uname -m`; \
+    if [ "$ARCH" = "ppc64le" ]; then ARCH=powerpc64le; fi; \
+    curl -SfL https://github.com/stunnel/static-curl/releases/download/8.6.0-1/curl-linux-$ARCH-8.6.0.tar.xz -o curl.tar.xz && \
+    tar -xvf curl.tar.xz && \
+    mv -v curl /usr/local/bin/curl && \
+    rm -v curl.tar.xz && \
+    cd /etc/ssl/certs && ln -s ca-bundle.crt ca-certificates.crt
+
 # Create user group
 RUN groupadd -g 1000 $CONTAINER_USER && \
     useradd -u 1000 -g 1000 -d $CONTAINER_USER_HOME $CONTAINER_USER && \
@@ -100,7 +111,7 @@ RUN groupadd -g 1000 $CONTAINER_USER && \
 COPY --from=linux_stage_0 --chown=$CONTAINER_USER:$CONTAINER_USER $CONTAINER_USER_HOME $CONTAINER_USER_HOME
 ENV NVM_DIR $CONTAINER_USER_HOME/.nvm
 ENV NODE_VERSION 20.18.3
-ENV CYPRESS_VERSION 12.13.0
+ENV CYPRESS_VERSION 9.5.4
 ENV CYPRESS_LOCATION $CONTAINER_USER_HOME/.cache/Cypress/$CYPRESS_VERSION
 ENV NODE_PATH $NVM_DIR/v$NODE_VERSION/lib/node_modules
 ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
@@ -133,8 +144,8 @@ RUN dnf install -y epel-release && dnf clean all && dnf install -y jq && dnf cle
     pip3 install cmake==3.26.4
 
 # Tools setup
-COPY --chown=0:0 config/yq-setup.sh config/gh-setup.sh /tmp/
-RUN dnf install -y go && /tmp/yq-setup.sh && /tmp/gh-setup.sh
+COPY --chown=0:0 config/yq-setup.sh config/gh-setup.sh config/op-setup.sh /tmp/
+RUN dnf install -y go && /tmp/yq-setup.sh && /tmp/gh-setup.sh && /tmp/op-setup.sh
 
 # Change User
 USER $CONTAINER_USER

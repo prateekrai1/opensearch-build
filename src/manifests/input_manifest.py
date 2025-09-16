@@ -10,8 +10,8 @@ An InputManifest is an immutable view of the input manifest for the build system
 The manifest contains information about the product that is being built (in the `build` section),
 and the components that make up the product in the `components` section.
 
-The format for schema version 1.1 is:
-schema-version: "1.1"
+The format for schema version 1.2 is:
+schema-version: "1.2"
 build:
   name: string
   version: string
@@ -21,8 +21,21 @@ build:
   snapshot: optional default snapshot
 ci:
   image:
-    name: docker image name to pull
-    args: args to execute builds with, e.g. -e JAVA_HOME=...
+    linux (or other platform as key here):
+      tar (or other distribution as key here):
+        name: docker image name to pull
+        args: args to execute builds with, e.g. -e JAVA_HOME=...
+      deb:
+        name: docker image name to pull
+        args: args to execute builds with, e.g. -e JAVA_HOME=...
+      rpm:
+        name: docker image name to pull
+        args: args to execute builds with, e.g. -e JAVA_HOME=...
+    windows:
+      zip:
+        name: docker image name to pull
+        args: args to execute builds with, e.g. -e JAVA_HOME=...
+    ......
 components:
   - name: string
     repository: URL of git repository
@@ -40,21 +53,23 @@ components:
 import copy
 import itertools
 import logging
-from typing import Callable, Iterator, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 from git.git_repository import GitRepository
 from manifests.component_manifest import Component, ComponentManifest, Components
 from manifests.input.input_manifest_1_0 import InputManifest_1_0
+from manifests.input.input_manifest_1_1 import InputManifest_1_1
 
 
 class InputManifest(ComponentManifest['InputManifest', 'InputComponents']):
     VERSIONS = {
         "1.0": InputManifest_1_0,
-        # "1.1": current
+        "1.1": InputManifest_1_1,
+        # "1.2": current
     }
 
     SCHEMA = {
-        "schema-version": {"required": True, "type": "string", "allowed": ["1.1"]},
+        "schema-version": {"required": True, "type": "string", "allowed": ["1.2"]},
         "build": {
             "required": True,
             "type": "dict",
@@ -75,7 +90,16 @@ class InputManifest(ComponentManifest['InputManifest', 'InputComponents']):
                 "image": {
                     "required": False,
                     "type": "dict",
-                    "schema": {"name": {"required": True, "type": "string"}, "args": {"required": False, "type": "string"}},
+                    "valueschema": {
+                        "type": "dict",
+                        "valueschema": {
+                            "type": "dict",
+                            "schema": {
+                                "name": {"required": True, "type": "string"},
+                                "args": {"required": False, "type": "string"},
+                            },
+                        },
+                    },
                 }
             },
         },
@@ -119,7 +143,7 @@ class InputManifest(ComponentManifest['InputManifest', 'InputComponents']):
 
     def __to_dict__(self) -> dict:
         return {
-            "schema-version": "1.1",
+            "schema-version": "1.2",
             "build": self.build.__to_dict__(),
             "ci": None if self.ci is None else self.ci.__to_dict__(),
             "components": self.components.__to_dict__(),
@@ -139,10 +163,28 @@ class InputManifest(ComponentManifest['InputManifest', 'InputComponents']):
 
     class Ci:
         def __init__(self, data: dict) -> None:
-            self.image = None if data is None else self.Image(data.get("image", None))
+            self.image = None if data is None else self.__image_extract__(data.get("image", {}))
+
+        def __image_extract__(self, data: dict) -> Dict[str, Dict[str, 'Image']]:
+            image_dict = {}  # type: ignore[var-annotated]
+            for plat, dists in data.items():
+                image_dict[plat] = {}
+                for dist, img in dists.items():
+                    image_dict[plat][dist] = self.Image(img)
+            return image_dict
 
         def __to_dict__(self) -> Optional[dict]:
-            return None if self.image is None else {"image": self.image.__to_dict__()}
+            if self.image is None:
+                return None
+            return {
+                "image": {
+                    plat: {
+                        dist: img.__to_dict__()
+                        for dist, img in dists.items()
+                    }
+                    for plat, dists in self.image.items()
+                }
+            }
 
         class Image:
             def __init__(self, data: dict) -> None:
@@ -302,4 +344,4 @@ class Check:
             return self.name  # type: ignore[no-any-return]
 
 
-InputManifest.VERSIONS = {"1.0": InputManifest_1_0, "1.1": InputManifest}
+InputManifest.VERSIONS = {"1.0": InputManifest_1_0, "1.1": InputManifest_1_1, "1.2": InputManifest}

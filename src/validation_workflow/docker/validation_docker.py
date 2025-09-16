@@ -79,6 +79,30 @@ class ValidateDocker(Validation):
 
                 if self.check_cluster_readiness():
                     # STEP 4 . OS, OSD API validation
+
+                    if self.args.artifact_type == "production":
+                        try:
+                            subprocess.run(f'docker cp opensearch-node1:/usr/share/opensearch/manifest.yml {self.tmp_dir.name}/manifest.yml',
+                                           shell=True, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+                            result = subprocess.run('docker exec opensearch-node1 ls /usr/share/opensearch/plugins',
+                                                    shell=True, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+                            native_plugins_list = self.get_native_plugin_list(self.tmp_dir.name, result.stdout.strip().split('\n'))
+                            for native_plugin in native_plugins_list:
+                                command = 'docker exec opensearch-node1 sh .' + os.sep + 'bin' + os.sep + f'opensearch-plugin install --batch {native_plugin}'
+                                logging.info(f"Executing {command}")
+                                subprocess.run(command,
+                                               shell=True, stdout=PIPE, stderr=PIPE, universal_newlines=True)
+
+                            subprocess.run(f"docker-compose -f {self._target_yml_file} restart", shell=True, stdout=PIPE, stderr=PIPE,
+                                           universal_newlines=True)
+                        except subprocess.CalledProcessError:
+                            logging.info("Docker daemon is not running")
+                            return False
+
+                        # Check for cluster readiness again and run api tests
+                        if not self.check_cluster_readiness():
+                            self.cleanup()
+                            return False
                     _test_result, _counter = ApiTestCases().test_apis(self.args.version, self.args.projects, True)
 
                     if _test_result:
@@ -123,7 +147,7 @@ class ValidateDocker(Validation):
         except OSError as e:
             logging.error("Error: %s - %s." % (e.filename, e.strerror))
 
-        return('returncode=0' in (str(result)))
+        return ('returncode=0' in (str(result)))
 
     def get_artifact_image_name(self, artifact: str, using_staging_artifact_only: str) -> Any:
         self.image_names = {

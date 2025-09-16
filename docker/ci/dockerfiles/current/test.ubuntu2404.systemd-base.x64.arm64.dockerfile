@@ -41,8 +41,8 @@ RUN apt-get update -y && apt-get upgrade -y && apt-get install -y curl git gnupg
     apt-get clean -y
 
 # Install yq
-COPY --chown=0:0 config/yq-setup.sh /tmp/
-RUN /tmp/yq-setup.sh
+COPY --chown=0:0 config/yq-setup.sh config/op-setup.sh /tmp/
+RUN /tmp/yq-setup.sh && /tmp/op-setup.sh
 
 # Create user group
 RUN groupadd -g 1000 $CONTAINER_USER && \
@@ -58,8 +58,8 @@ WORKDIR $CONTAINER_USER_HOME
 # nvm environment variables
 ENV NVM_DIR $CONTAINER_USER_HOME/.nvm
 ENV NODE_VERSION 20.18.3
-ENV CYPRESS_VERSION 12.13.0
-ARG CYPRESS_VERSION_LIST="5.6.0 9.5.4 12.13.0"
+ENV CYPRESS_VERSION 9.5.4
+ARG CYPRESS_VERSION_LIST="5.6.0 9.5.4"
 ENV CYPRESS_LOCATION $CONTAINER_USER_HOME/.cache/Cypress/$CYPRESS_VERSION
 ENV CYPRESS_LOCATION_954 $CONTAINER_USER_HOME/.cache/Cypress/9.5.4
 # install nvm
@@ -78,7 +78,7 @@ COPY --chown=$CONTAINER_USER:$CONTAINER_USER config/yarn-version.sh /tmp
 RUN npm install -g yarn@`/tmp/yarn-version.sh main`
 # Add legacy cypress@5.6.0 for 1.x line
 # Add legacy cypress@9.5.4 for pre-2.8.0 releases
-# Add latest cypress@12.13.0 for post-2.8.0 releases
+# Add latest cypress@12.13.0 for post-2.8.0 releases, disable in 3.2.0 release due to install error https://github.com/cypress-io/cypress/issues/4595
 RUN for cypress_version in $CYPRESS_VERSION_LIST; do npm install -g cypress@$cypress_version && npm cache verify; done
 
 # Need root to get pass the build due to chrome sandbox needs to own by the root
@@ -139,13 +139,13 @@ RUN apt-get install -y sudo && \
     usermod -a -G opensearch-dashboards $CONTAINER_USER && \
     usermod -a -G adm $CONTAINER_USER && \
     id && \
-    echo "$CONTAINER_USER ALL=(root) NOPASSWD:`which systemctl`, `which env`, `which su`, `which usermod`, `which apt`, `which apt-get`, `which apt-key`, `which dpkg`, `which chmod`, `which kill`, `which curl`, `which tee`, `which rm`, /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin" >> /etc/sudoers.d/$CONTAINER_USER
+    echo "$CONTAINER_USER ALL=(root) NOPASSWD:`which systemctl`, `which env`, `which su`, `which usermod`, `which apt`, `which apt-get`, `which apt-key`, `which dpkg`, `which chmod`, `which kill`, `which curl`, `which tee`, `which rm`, /usr/share/opensearch/bin/opensearch-plugin, /usr/share/opensearch-dashboards/bin/opensearch-dashboards-plugin" >> /etc/sudoers.d/$CONTAINER_USER
 
 # Copy from Stage0
 COPY --from=linux_stage_0 --chown=$CONTAINER_USER:$CONTAINER_USER $CONTAINER_USER_HOME $CONTAINER_USER_HOME
 ENV NVM_DIR $CONTAINER_USER_HOME/.nvm
 ENV NODE_VERSION 20.18.3
-ENV CYPRESS_VERSION 12.13.0
+ENV CYPRESS_VERSION 9.5.4
 ENV CYPRESS_LOCATION $CONTAINER_USER_HOME/.cache/Cypress/$CYPRESS_VERSION
 ENV NODE_PATH $NVM_DIR/v$NODE_VERSION/lib/node_modules
 ENV PATH $NVM_DIR/versions/node/v$NODE_VERSION/bin:$PATH
@@ -160,8 +160,8 @@ USER 0
 RUN source $NVM_DIR/nvm.sh && ls -al $CONTAINER_USER_HOME && echo $NODE_VERSION $NVM_DIR && nvm use $NODE_VERSION
 
 # Tools setup
-COPY --chown=0:0 config/jdk-setup.sh config/yq-setup.sh config/gh-setup.sh /tmp/
-RUN apt-get install -y golang-1.22 && /tmp/jdk-setup.sh && /tmp/yq-setup.sh && /tmp/gh-setup.sh && apt-get clean -y && apt-get autoremove -y
+COPY --chown=0:0 config/jdk-setup.sh config/yq-setup.sh config/gh-setup.sh config/op-setup.sh /tmp/
+RUN apt-get install -y golang-1.22 && /tmp/jdk-setup.sh && /tmp/yq-setup.sh && /tmp/gh-setup.sh && /tmp/op-setup.sh && apt-get clean -y && apt-get autoremove -y
 
 # Setup Shared Memory
 RUN chmod -R 777 /dev/shm

@@ -7,29 +7,19 @@
  * compatible open source license.
  */
 
-lib = library(identifier: 'jenkins@9.1.2', retriever: modernSCM([
+lib = library(identifier: 'jenkins@10.1.0', retriever: modernSCM([
     $class: 'GitSCMSource',
     remote: 'https://github.com/opensearch-project/opensearch-build-libraries.git',
 ]))
-
-def docker_images = [
-    "tar": "opensearchstaging/ci-runner:ci-runner-almalinux8-opensearch-dashboards-integtest-v1",
-    "rpm": "opensearchstaging/ci-runner:ci-runner-almalinux8-systemd-base-integtest-v1",
-    "deb": "opensearchstaging/ci-runner:ci-runner-ubuntu2404-systemd-base-integtest-v1",
-    "zip": "opensearchstaging/ci-runner:ci-runner-windows2019-opensearch-build-v1",
-]
-
-def docker_args = [
-    "tar": "-u 1000 --cpus 4 -m 16g -e BROWSER_PATH=electron",
-    "rpm": "--entrypoint=/usr/lib/systemd/systemd -u root --privileged -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cgroupns=host --cpus 4 -m 16g -e BROWSER_PATH=electron",
-    "deb": "--entrypoint=/usr/lib/systemd/systemd -u root --privileged -v /sys/fs/cgroup:/sys/fs/cgroup:rw --cgroupns=host --cpus 4 -m 16g -e BROWSER_PATH=electron",
-    "zip": "-u ContainerAdministrator",
-]
 
 def agent_nodes = [
     "linux_x64": "Jenkins-Agent-AL2023-X64-M54xlarge-Docker-Host",
     "linux_arm64": "Jenkins-Agent-AL2023-Arm64-M6g4xlarge-Docker-Host",
     "windows_x64": "Jenkins-Agent-Windows2019-X64-M54xlarge-Docker-Host",
+]
+
+def secret_artifacts = [
+    [envVar: 'ARTIFACT_BUCKET_NAME', secretRef: 'op://opensearch-infra-secrets/aws-resource-arns/jenkins-artifact-bucket-name']
 ]
 
 pipeline {
@@ -43,7 +33,6 @@ pipeline {
         BUILD_MANIFEST_OPENSEARCH = "build-manifest-opensearch.yml"
         BUILD_JOB_NAME = "distribution-build-opensearch-dashboards"
         BUILD_JOB_NAME_OPENSEARCH = "distribution-build-opensearch"
-        ARTIFACT_BUCKET_NAME = credentials('jenkins-artifact-bucket-name')
     }
     parameters {
         string(
@@ -121,6 +110,13 @@ pipeline {
                     env.artifactPathOpenSearch = buildManifestObjOpenSearch.getArtifactRoot(BUILD_JOB_NAME_OPENSEARCH, buildIdOpenSearch)
                     env.AGENT_LABEL = agent_nodes["${env.platform}_${architecture}"]
 
+                    // Get docker information
+                    testDockerAgent = detectTestDockerAgent(
+                        distribution: "${distribution}",
+                        platform: "${platform}"
+                    )
+                    echo("Test Docker Image: ${testDockerAgent.image}, Args: ${testDockerAgent.args}, JavaVersion: ${testDockerAgent.javaVersion}")
+
                     echo "Version: ${version}, VersionOpenSearch: ${versionOpenSearch}, Agent: ${AGENT_LABEL}, OSD_BuildId: ${buildId}, OS_BuildId: ${buildIdOpenSearch}, Distribution: ${distribution}"
                     currentBuild.description = "$architecture, $platform, osd-$version-$buildId, os-$versionOpenSearch-$buildIdOpenSearch, $distribution"
 
@@ -193,25 +189,27 @@ pipeline {
                     if (env.platform != 'windows') {
                         echo "Not on Windows, stash repository+artifacts"
                         echo "Downloading from S3: ${artifactPathOpenSearch}"
-                        downloadFromS3(
-                            assumedRoleName: 'opensearch-bundle',
-                            roleAccountNumberCred: 'jenkins-aws-account-public',
-                            downloadPath: "${artifactPathOpenSearch}/",
-                            bucketName: "${ARTIFACT_BUCKET_NAME}",
-                            localPath: "${WORKSPACE}/artifacts",
-                            force: true
-                          )
-                        sh("cp -a $WORKSPACE/artifacts/${artifactPathOpenSearch} $WORKSPACE")
+                        withSecrets(secrets: secret_artifacts) {
+                            downloadFromS3(
+                                assumedRoleName: 'opensearch-bundle',
+                                roleAccountNumberCred: 'jenkins-aws-account-public',
+                                downloadPath: "${artifactPathOpenSearch}/",
+                                bucketName: "${ARTIFACT_BUCKET_NAME}",
+                                localPath: "${WORKSPACE}/artifacts",
+                                force: true
+                              )
+                            sh("cp -a $WORKSPACE/artifacts/${artifactPathOpenSearch} $WORKSPACE")
 
-                        echo "Downloading from S3: ${artifactPath}"
-                        downloadFromS3(
-                            assumedRoleName: 'opensearch-bundle',
-                            roleAccountNumberCred: 'jenkins-aws-account-public',
-                            downloadPath: "${artifactPath}/",
-                            bucketName: "${ARTIFACT_BUCKET_NAME}",
-                            localPath: "${WORKSPACE}/artifacts",
-                            force: true
-                          )
+                            echo "Downloading from S3: ${artifactPath}"
+                            downloadFromS3(
+                                assumedRoleName: 'opensearch-bundle',
+                                roleAccountNumberCred: 'jenkins-aws-account-public',
+                                downloadPath: "${artifactPath}/",
+                                bucketName: "${ARTIFACT_BUCKET_NAME}",
+                                localPath: "${WORKSPACE}/artifacts",
+                                force: true
+                              )
+                        }
                         sh("cp -a $WORKSPACE/artifacts/${artifactPath} $WORKSPACE")
                         sh("rm -rf $WORKSPACE/artifacts")
 
@@ -245,22 +243,31 @@ pipeline {
                               timeout(time: 3, unit: 'HOURS') {
                                 node(AGENT_LABEL) {
                                   docker.withRegistry('https://public.ecr.aws/') {
-                                    docker.image(docker_images["$distribution"]).pull() // always pull latest
-                                    docker.image(docker_images["$distribution"]).inside(docker_args["$distribution"]) {
+                                    docker.image(testDockerAgent.image).pull() // always pull latest
+                                    docker.image(testDockerAgent.image).inside(testDockerAgent.args) {
                                       try {
                                         stage("${local_component}-ci-group-${ciNum}") {
-                                          sh("echo ${local_component}-ci-group-${ciNum} will sleep ${wait_seconds} seconds to reduce load && sleep ${wait_seconds}")
-                                          runIntegTestScriptForOSD(
-                                            localComponent: "${local_component}",
-                                            switchUserNonRoot: "${switch_user_non_root}",
-                                            ciGroup: "${ciNum}",
-                                            artifactPathOpenSearch: "${artifactPathOpenSearch}",
-                                            artifactPath: "${artifactPath}",
-                                            artifactBucketName:  "${ARTIFACT_BUCKET_NAME}",
-                                            distribution: "${distribution}",
-                                            buildManifest: "${BUILD_MANIFEST}",
-                                            testManifest: "manifests/${TEST_MANIFEST}"
-                                          )
+                                          if (isUnix()){
+                                            sh("echo ${local_component}-ci-group-${ciNum} will sleep ${wait_seconds} seconds to reduce load && sleep ${wait_seconds}")
+                                          } else {
+                                            bat"""
+                                                bash -c "echo ${local_component}-ci-group-${ciNum} will sleep ${wait_seconds} seconds to reduce load && sleep ${wait_seconds}"
+                                            """
+                                          }
+
+                                          withSecrets(secrets: secret_artifacts) {
+                                              runIntegTestScriptForOSD(
+                                                localComponent: "${local_component}",
+                                                switchUserNonRoot: "${switch_user_non_root}",
+                                                ciGroup: "${ciNum}",
+                                                artifactPathOpenSearch: "${artifactPathOpenSearch}",
+                                                artifactPath: "${artifactPath}",
+                                                artifactBucketName:  "${ARTIFACT_BUCKET_NAME}",
+                                                distribution: "${distribution}",
+                                                buildManifest: "${BUILD_MANIFEST}",
+                                                testManifest: "manifests/${TEST_MANIFEST}"
+                                              )
+                                          }
                                         }
                                       } catch (e) {
                                         throw new Exception("Error running integtest for component ${local_component}-ci-group-${ciNum}", e)
@@ -289,25 +296,34 @@ pipeline {
                                 timeout(time: 6, unit: 'HOURS') {
                                     node(AGENT_LABEL) {
                                         docker.withRegistry('https://public.ecr.aws/') {
-                                            docker.image(docker_images["$distribution"]).inside(docker_args["$distribution"]) {
+                                            docker.image(testDockerAgent.image).pull() // always pull latest
+                                            docker.image(testDockerAgent.image).inside(testDockerAgent.args) {
                                                 try {
                                                     stage("${local_component}") {
                                                         // Jenkins tend to not clean up workspace at times even though ws clean is called
                                                         // Since docker is mounted on the agent node directly so it can communicated with the agent
                                                         // This sometimes causes the workspace to retain last run test-results and ends with build failures
                                                         // https://github.com/opensearch-project/opensearch-build/blob/6ed1ce3c583233eae4fe1027969d778cfc7660f7/src/test_workflow/test_recorder/test_recorder.py#L99
-                                                        sh("echo ${local_component} with index ${local_component_index} will sleep ${wait_seconds} seconds to reduce load && sleep ${wait_seconds}")
-                                                        runIntegTestScriptForOSD(
-                                                            localComponent: local_component,
-                                                            switchUserNonRoot: switch_user_non_root,
-                                                            ciGroup: "",
-                                                            artifactPathOpenSearch: "${artifactPathOpenSearch}",
-                                                            artifactPath: "${artifactPath}",
-                                                            artifactBucketName:  "${ARTIFACT_BUCKET_NAME}",
-                                                            distribution: "${distribution}",
-                                                            buildManifest: "${BUILD_MANIFEST}",
-                                                            testManifest: "manifests/${TEST_MANIFEST}"
-                                                        )
+                                                        if (isUnix()) {
+                                                            sh("echo ${local_component} with index ${local_component_index} will sleep ${wait_seconds} seconds to reduce load && sleep ${wait_seconds}")
+                                                        } else {
+                                                            bat"""
+                                                                bash -c "echo ${local_component} with index ${local_component_index} will sleep ${wait_seconds} seconds to reduce load && sleep ${wait_seconds}"
+                                                            """
+                                                        }
+                                                        withSecrets(secrets: secret_artifacts) {
+                                                            runIntegTestScriptForOSD(
+                                                                localComponent: local_component,
+                                                                switchUserNonRoot: switch_user_non_root,
+                                                                ciGroup: "",
+                                                                artifactPathOpenSearch: "${artifactPathOpenSearch}",
+                                                                artifactPath: "${artifactPath}",
+                                                                artifactBucketName:  "${ARTIFACT_BUCKET_NAME}",
+                                                                distribution: "${distribution}",
+                                                                buildManifest: "${BUILD_MANIFEST}",
+                                                                testManifest: "manifests/${TEST_MANIFEST}"
+                                                            )
+                                                        }
                                                     }
                                                 } catch (e) {
                                                     throw new Exception("Error running integtest for component ${local_component}", e)
@@ -335,7 +351,7 @@ pipeline {
                         retry(5) {
                             node(AGENT_LABEL) {
                                 docker.withRegistry('https://public.ecr.aws/') {
-                                    docker.image(docker_images["$distribution"]).inside(docker_args["$distribution"]) {
+                                    docker.image(testDockerAgent.image).inside(testDockerAgent.args) {
                                         checkout scm
                                         sleep 10
                                         downloadBuildManifest(

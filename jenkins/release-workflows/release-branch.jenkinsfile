@@ -7,10 +7,15 @@
  * compatible open source license.
  */
 
-lib = library(identifier: 'jenkins@6.3.3', retriever: modernSCM([
+lib = library(identifier: 'jenkins@9.6.0', retriever: modernSCM([
     $class: 'GitSCMSource',
     remote: 'https://github.com/opensearch-project/opensearch-build-libraries.git',
 ]))
+
+def secret_github_bot = [
+    [envVar: 'GITHUB_USER', secretRef: 'op://opensearch-infra-secrets/github-bot/ci-bot-username'],
+    [envVar: 'GITHUB_TOKEN', secretRef: 'op://opensearch-infra-secrets/github-bot/ci-bot-token']
+]
 
 pipeline {
     options {
@@ -56,7 +61,7 @@ pipeline {
 
                     def manifestList = MANIFEST_FILE.trim().split(' ') as List
 
-                    withCredentials([usernamePassword(credentialsId: "jenkins-github-bot-token", usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+                    withSecrets(secrets: secret_github_bot){
                         for (manifest in manifestList) {
                             if (manifest.contains("builds")) {
 

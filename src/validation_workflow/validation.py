@@ -16,6 +16,8 @@ from typing import Any
 
 import requests
 
+from manifests.bundle_manifest import BundleManifest
+from system.execute import execute
 from system.temporary_directory import TemporaryDirectory
 from validation_workflow.api_request import ApiTest
 from validation_workflow.download_utils import DownloadUtils
@@ -50,6 +52,41 @@ class Validation(ABC):
     def check_for_security_plugin(self, work_dir: str) -> bool:
         path = os.path.exists(os.path.join(work_dir, "plugins", "opensearch-security"))
         return path
+
+    def install_native_plugin(self, path: str, installed_plugins_list: list) -> None:
+        native_plugins_list = self.get_native_plugin_list(path, installed_plugins_list)
+        try:
+            if self.args.artifact_type == "staging":
+                for native_plugin in native_plugins_list:
+                    plugin_url = f'{self.base_url_staging}opensearch/{self.args.version}/{self.args.build_number["opensearch"]}/{self.args.platform}/' \
+                                 f'{self.args.arch}/{self.args.distribution}/builds/opensearch/core-plugins/{native_plugin}-{self.args.version}.zip'
+                    response = requests.get(plugin_url)
+                    with open(os.path.join(os.path.join(path, "bin"), f'{native_plugin}-{self.args.version}.zip'), 'wb') as f:
+                        f.write(response.content)
+                    execute(
+                        '.' + os.sep + f'opensearch-plugin install --batch file:{os.path.join(os.path.join(path, "bin"), f"{native_plugin}-{self.args.version}.zip")}',
+                        os.path.join(path, "bin"))
+            else:
+                for native_plugin in native_plugins_list:
+                    execute('.' + os.sep + f'opensearch-plugin install --batch {native_plugin}', os.path.join(path, "bin"))
+
+        except Exception as e:
+            raise Exception(f"Unable to install native plugin: {str(e)}")
+
+    def get_native_plugin_list(self, workdir: str, installed_plugins_list: list) -> list:
+        bundle_manifest = BundleManifest.from_path(os.path.join(workdir, "manifest.yml"))
+        commit_id = bundle_manifest.components["OpenSearch"].commit_id
+        plugin_url = f"https://api.github.com/repos/opensearch-project/OpenSearch/contents/plugins?ref={commit_id}"
+        api_response = requests.get(plugin_url)
+        if api_response.status_code == 200:
+            response = api_response.json()
+            plugin_list = [i["name"] for i in response if i["name"] not in installed_plugins_list]
+            plugin_list.remove("examples")
+            plugin_list.remove("build.gradle")
+            plugin_list.remove("identity-shiro")  # Since the security plugin is enabled in the artifacts and identity-shiro is also an identity plugin, we cannot have both the plugins installed together. # noqa: E501
+            return plugin_list
+        else:
+            raise Exception("Github Api returned error code while retrieving the list of native plugins")
 
     def get_version(self, project: str) -> str:
         return re.search(r'(\d+\.\d+\.\d+)', os.path.basename(project)).group(1)
