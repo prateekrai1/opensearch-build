@@ -1,35 +1,141 @@
 pipeline {
     agent any
+    
     environment {
-        GITHUB_TOKEN = credentials('github-token')
         REPO_URL = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'
         REPO_DIR = 'OpenSearchFeature16099'
     }
+    
     stages {
-        stage('Clone Repository') {
-           steps {
-                script {
-                    if (!GITHUB_TOKEN || !REPO_URL) {
-                        error("Environment variables GITHUB_TOKEN or REPO_URL are not set. Check your Jenkins configuration.")
-                    }
-                }
-           }
-        }
-        stage('Run PR Management Scripts') {
+        stage('Debug Environment') {
             steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     sh '''
-                        python3 src/pr_management/BackportPRs.py prateekrai1 OpenSearchFeature16099 OpenSearchFeature16099
-                        python3 src/pr_management/StalledPRs.py prateekrai1 OpenSearchFeature16099 OpenSearchFeature16099
+                        echo "=== Environment Debug ==="
+                        echo "GITHUB_TOKEN present: $([ ! -z "$GITHUB_TOKEN" ] && echo "Yes" || echo "No")"
+                        echo "Token starts with: $(echo $GITHUB_TOKEN | cut -c1-4)..."
+                        echo "Repository to process: ${REPO_URL}"
+                        echo "Working directory: $(pwd)"
+                        echo "Available files: $(ls -la)"
+                        
+                        # Test GitHub API access
+                        echo "Testing GitHub API access..."
+                        curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+                             -H "Accept: application/vnd.github.v3+json" \
+                             https://api.github.com/user | jq -r '.login // "API Error"' || echo "Failed to access GitHub API"
                     '''
+                }
+            }
+        }
+        
+        stage('Clone Target Repository') {
+            steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                        echo "=== Cloning Target Repository ==="
+                        # Remove existing clone if present
+                        rm -rf ${REPO_DIR}
+                        
+                        # Clone the repository containing PRs to process
+                        git clone ${REPO_URL} ${REPO_DIR}
+                        cd ${REPO_DIR}
+                        
+                        echo "Repository cloned successfully"
+                        echo "Current directory: $(pwd)"
+                        echo "Repository status:"
+                        git status --short || echo "No changes"
+                        git log --oneline -5 || echo "No commits"
+                    '''
+                }
+            }
+        }
+        
+        stage('Validate Scripts') {
+            steps {
+                sh '''
+                    echo "=== Script Validation ==="
+                    # Check if scripts exist in the Jenkinsfile repo (opensearch-build)
+                    if [ -d "src/pr_management" ]; then
+                        echo "Scripts found in current repo"
+                        ls -la src/pr_management/
+                    else
+                        echo "ERROR: Scripts directory not found!"
+                        echo "Current directory contents:"
+                        ls -la
+                        exit 1
+                    fi
+                    
+                    # Validate Python syntax
+                    python3 -m py_compile src/pr_management/BackportPRs.py
+                    python3 -m py_compile src/pr_management/StalledPRs.py
+                    echo "Script validation passed ✓"
+                '''
+            }
+        }
+        
+        stage('Run Backport PR Management') {
+            steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                        echo "=== Processing Backport PRs ==="
+                        export GITHUB_TOKEN="${GITHUB_TOKEN}"
+                        
+                        # Run from jenkinsfile repo, but target the PR repo
+                        python3 src/pr_management/BackportPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR}
+                    '''
+                }
+            }
+        }
+        
+        stage('Run Stalled PR Management') {
+            steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                        echo "=== Processing Stalled PRs ==="
+                        export GITHUB_TOKEN="${GITHUB_TOKEN}"
+                        
+                        # Run from jenkinsfile repo, but target the PR repo
+                        python3 src/pr_management/StalledPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR}
+                    '''
+                }
+            }
+        }
+        
+        stage('Generate Report') {
+            steps {
+                sh '''
+                    echo "=== Generating Report ==="
+                    {
+                        echo "PR Automation Report"
+                        echo "===================="
+                        echo "Build Number: ${BUILD_NUMBER}"
+                        echo "Timestamp: $(date)"
+                        echo "Source Repository (Jenkinsfile): opensearch-build" 
+                        echo "Target Repository (PRs): ${REPO_URL}"
+                        echo "Status: Success"
+                    } > automation-report.txt
+                    
+                    echo "Report generated:"
+                    cat automation-report.txt
+                '''
+                archiveArtifacts artifacts: 'automation-report.txt', allowEmptyArchive: true
             }
         }
     }
+    
     post {
+        always {
+            sh '''
+                echo "=== Cleanup ==="
+                # Clean up cloned repository but keep reports
+                rm -rf ${REPO_DIR} || true
+            '''
+        }
         success {
-            echo 'Pipeline completed successfully.'
+            echo '🎉 Pipeline completed successfully! PR automation finished.'
         }
         failure {
-            echo 'Pipeline failed. Check logs for details.'
+            echo '❌ Pipeline failed. Check console output for details.'
         }
     }
 }
