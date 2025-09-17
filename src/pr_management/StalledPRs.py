@@ -54,8 +54,15 @@ def fetch_pr_details(owner: str, repo: str, pr_number: int) -> dict:
 def checkout_pr(repo_dir: str, pr_head_repo_clone_url: str, pr_head_ref: str, local_branch: str) -> None:
     # Ensure remotes are present/fresh
     run(["git", "remote", "-v"], cwd=repo_dir, check=False)
-    # Fetch remote PR head
-    run(["git", "fetch", pr_head_repo_clone_url, f"{pr_head_ref}:{local_branch}"], cwd=repo_dir)
+    # Create or update a dedicated 'head' remote pointing at the PR source repo
+    code, out, _ = run(["git", "remote"], cwd=repo_dir, check=False)
+    remotes = out.split()
+    if "head" not in remotes:
+        run(["git", "remote", "add", "head", pr_head_repo_clone_url], cwd=repo_dir, check=False)
+    else:
+        run(["git", "remote", "set-url", "head", pr_head_repo_clone_url], cwd=repo_dir, check=False)
+    # Fetch the PR head ref into a local working branch
+    run(["git", "fetch", "head", f"{pr_head_ref}:{local_branch}"], cwd=repo_dir)
     run(["git", "checkout", local_branch], cwd=repo_dir)
 
 def resolve_changelog_conflict(repo_dir: str, path: str = "CHANGELOG.md", prefer_pr_on_top: bool = True) -> bool:
@@ -110,7 +117,6 @@ def add_all_conflicted_files(repo_dir: str, take_pr_side: bool = True, exclude_c
     Auto-resolve conflicts by taking the PR side (theirs during rebase) or target side (ours).
     Returns list of files resolved.
     """
-    # List conflicted files
     _, out, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
     files = [f for f in out.splitlines() if f.strip()]
     resolved = []
@@ -131,11 +137,9 @@ def continue_or_skip_rebase(repo_dir: str) -> None:
     if code == 0:
         return
     text = (out or "") + "\n" + (err or "")
-    if "No changes" in text or "nothing to commit" in text or "You must edit all merge conflicts" in text:
-        # If nothing to commit, or user forgot to add files, try skip
+    if "No changes" in text or "nothing to commit" in text or "The previous cherry-pick is now empty" in text:
         run(["git", "rebase", "--skip"], cwd=repo_dir, check=False)
     else:
-        # Surface the failure
         raise subprocess.CalledProcessError(code or 1, ["git", "rebase", "--continue"], output=out, stderr=err)
 
 def rebase_pr_onto_target(repo_dir: str, pr_branch: str, target_branch: str, prefer_pr_on_top_changelog: bool = True, take_pr_side_for_others: bool = True) -> None:
@@ -152,14 +156,10 @@ def rebase_pr_onto_target(repo_dir: str, pr_branch: str, target_branch: str, pre
         return  # clean rebase
 
     # Conflict path
-    # First, try resolving non-changelog conflicts via side selection
     add_all_conflicted_files(repo_dir, take_pr_side=take_pr_side_for_others, exclude_changelog=True)
-    # Then handle CHANGELOG deterministically
     resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
-    # Continue or skip
     continue_or_skip_rebase(repo_dir)
 
-    # If more conflicts appear in subsequent commits, loop until done
     while True:
         _, conflicts, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
         if not conflicts.strip():
@@ -168,8 +168,9 @@ def rebase_pr_onto_target(repo_dir: str, pr_branch: str, target_branch: str, pre
         resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
         continue_or_skip_rebase(repo_dir)
 
-def force_push(repo_dir: str, branch: str) -> None:
-    run(["git", "push", "--force-with-lease", "origin", f"{branch}:{branch}"], cwd=repo_dir)
+def force_push(repo_dir: str, remote: str, src_local_branch: str, dest_remote_branch: str) -> None:
+    # Push local branch back to the PR head repo/branch (e.g., remote='head', branch='test-stalled')
+    run(["git", "push", "--force-with-lease", remote, f"{src_local_branch}:{dest_remote_branch}"], cwd=repo_dir)
 
 def main() -> None:
     import argparse
@@ -201,8 +202,8 @@ def main() -> None:
     head = pr["head"]
     base = pr["base"]
     pr_head_repo_clone = head["repo"]["clone_url"]
-    pr_head_ref = head["ref"]
-    pr_branch = f"pr-{pr_number}-{pr_head_ref}"
+    pr_head_ref = head["ref"]                  # actual PR source branch name
+    pr_branch = f"pr-{pr_number}-{pr_head_ref}"  # local working branch
 
     print(f"Handling PR #{pr_number}: {pr_head_ref} -> {base['ref']}")
     checkout_pr(repo_dir, pr_head_repo_clone, pr_head_ref, pr_branch)
@@ -214,13 +215,8 @@ def main() -> None:
     # Perform the rebase with robust conflict handling
     rebase_pr_onto_target(repo_dir, pr_branch, target_branch, prefer_pr_on_top_changelog=prefer_pr, take_pr_side_for_others=take_pr_side)
 
-    # Push back to the PR branch on the contributor's fork if possible; otherwise push to origin if same repo
-    # Determine remote of the pr_branch
-    # Try pushing to the head fork (best effort); if it fails, push to origin matching branch name
-    code, _, _ = run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=repo_dir, check=False)
-    # Regardless of upstream, push to origin/<pr_head_ref> when the PR originates from same repo; otherwise, push to the fork remote name if configured.
-    # As a simple default, push to origin with the same branch name:
-    force_push(repo_dir, pr_branch)
+    # Push back to the PR's head repo/branch
+    force_push(repo_dir, remote="head", src_local_branch=pr_branch, dest_remote_branch=pr_head_ref)
 
     # Cleanup safety
     abort_in_progress_ops(repo_dir)
