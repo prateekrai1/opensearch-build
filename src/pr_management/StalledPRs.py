@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os
-import json
 import subprocess
 import sys
 import shlex
@@ -31,12 +30,12 @@ def setup_git_config(repo_dir: str) -> None:
 
 def abort_in_progress_ops(repo_dir: str) -> None:
     """Best-effort abort of any in-progress git ops that could poison a new rebase."""
-    for cmd in [
+    for cmd in (
         ["git", "rebase", "--abort"],
         ["git", "cherry-pick", "--abort"],
         ["git", "am", "--abort"],
         ["git", "merge", "--abort"],
-    ]:
+    ):
         run(cmd, cwd=repo_dir, check=False)
 
 def ensure_clean_repo(repo_dir: str) -> None:
@@ -137,7 +136,7 @@ def continue_or_skip_rebase(repo_dir: str) -> None:
     if code == 0:
         return
     text = (out or "") + "\n" + (err or "")
-    if "No changes" in text or "nothing to commit" in text or "The previous cherry-pick is now empty" in text:
+    if ("No changes" in text) or ("nothing to commit" in text) or ("The previous cherry-pick is now empty" in text):
         run(["git", "rebase", "--skip"], cwd=repo_dir, check=False)
     else:
         raise subprocess.CalledProcessError(code or 1, ["git", "rebase", "--continue"], output=out, stderr=err)
@@ -160,6 +159,7 @@ def rebase_pr_onto_target(repo_dir: str, pr_branch: str, target_branch: str, pre
     resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
     continue_or_skip_rebase(repo_dir)
 
+    # Loop until all conflicts are handled
     while True:
         _, conflicts, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
         if not conflicts.strip():
