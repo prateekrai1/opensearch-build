@@ -1,254 +1,148 @@
+#!/usr/bin/env python3
 import os
-import requests
+import json
 import subprocess
 import sys
+import shlex
+from typing import List, Tuple, Optional
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 BASE_URL = "https://api.github.com"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+HEADERS = {
+    "Accept": "application/vnd.github+json",
+    **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}),
+}
 
-def setup_git_config(repo_dir):
-    """Setup git configuration for the repository."""
-    subprocess.run(["git", "config", "user.name", "OpenSearch Bot"], cwd=repo_dir, check=True)
-    subprocess.run(["git", "config", "user.email", "opensearch-bot@amazon.com"], cwd=repo_dir, check=True)
+def run(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -> Tuple[int, str, str]:
+    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out, err = p.communicate()
+    if check and p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, cmd, output=out, stderr=err)
+    return p.returncode, out, err
 
-def fetch_backport_prs(owner, repo):
-    """Fetch backport PR's with the `backport` label"""
-    url = f"{BASE_URL}/search/issues"
-    query = f"repo:{owner}/{repo} label:backport is:pr is:open"
-    response = requests.get(url, headers=HEADERS, params={"q": query})
-    response.raise_for_status()
-    return response.json()["items"]
+def setup_git_config(repo_dir: str) -> None:
+    run(["git", "config", "user.name", "OpenSearch Bot"], cwd=repo_dir, check=False)
+    run(["git", "config", "user.email", "opensearch-bot@amazon.com"], cwd=repo_dir, check=False)
+    run(["git", "config", "rerere.enabled", "true"], cwd=repo_dir, check=False)
 
-def fetch_pr_details(owner, repo, pr_number):
-    """Fetch PR details to get source and target branches"""
+def abort_in_progress_ops(repo_dir: str) -> None:
+    for cmd in [
+        ["git", "rebase", "--abort"],
+        ["git", "cherry-pick", "--abort"],
+        ["git", "am", "--abort"],
+        ["git", "merge", "--abort"],
+    ]:
+        run(cmd, cwd=repo_dir, check=False)
+
+def ensure_clean_repo(repo_dir: str) -> None:
+    abort_in_progress_ops(repo_dir)
+    run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
+    run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
+
+def fetch_pr(owner: str, repo: str, pr_number: int) -> dict:
+    import requests
     url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}"
-    response = requests.get(url, headers=HEADERS)
-    response.raise_for_status()
-    return response.json()
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-def get_pr_commits(owner, repo, pr_number):
-    """Get all commits in a PR"""
+def list_commits_for_pr(owner: str, repo: str, pr_number: int) -> List[str]:
+    import requests
     url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}/commits"
-    response = requests.get(url, headers=HEADERS)
-    response.raise_for_status()
-    return response.json()
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    commits = r.json()
+    return [c["sha"] for c in commits]
 
-def resolve_changelog_conflict_advanced(file_path):
-    """Advanced changelog conflict resolution that preserves chronological order."""
-    if not os.path.exists(file_path):
-        print(f"Warning: {file_path} does not exist")
-        return
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
+def resolve_changelog_conflict(repo_dir: str, path: str = "CHANGELOG.md", prefer_pr_on_top: bool = True) -> bool:
+    full = os.path.join(repo_dir, path)
+    if not os.path.exists(full):
+        return False
+    with open(full, "r", encoding="utf-8") as f:
         content = f.read()
-    
-    # Check if there are conflict markers
-    if not ('<<<<<<< ' in content and '=======' in content and '>>>>>>> ' in content):
-        print("No conflict markers found in CHANGELOG.md")
-        return
-    
-    print("Resolving CHANGELOG.md conflicts...")
-    
-    # Split content by conflict blocks
-    lines = content.split('\n')
-    resolved_lines = []
+    if "<<<<<<< " not in content:
+        return False
+    lines = content.splitlines()
+    out = []
     i = 0
-    
+    changed = False
     while i < len(lines):
         line = lines[i]
-        
-        if line.startswith('<<<<<<< '):
-            # Start of conflict block
+        if line.startswith("<<<<<<< "):
+            changed = True
+            ours = []
+            theirs = []
             i += 1
-            head_changes = []
-            
-            # Collect HEAD changes
-            while i < len(lines) and not lines[i].startswith('======='):
-                head_changes.append(lines[i])
-                i += 1
-            
-            # Skip the separator
+            while i < len(lines) and not lines[i].startswith("======="):
+                ours.append(lines[i]); i += 1
             i += 1
-            incoming_changes = []
-            
-            # Collect incoming changes
-            while i < len(lines) and not lines[i].startswith('>>>>>>> '):
-                incoming_changes.append(lines[i])
-                i += 1
-            
-            # Skip the end marker
+            while i < len(lines) and not lines[i].startswith(">>>>>>> "):
+                theirs.append(lines[i]); i += 1
             i += 1
-            
-            # Merge changes - put newer changes first (incoming changes are usually newer)
-            resolved_lines.extend(incoming_changes)
-            resolved_lines.extend(head_changes)
-            
+            if prefer_pr_on_top:
+                out.extend(theirs)
+                out.extend(ours)
+            else:
+                out.extend(ours)
+                out.extend(theirs)
         else:
-            resolved_lines.append(line)
+            out.append(line)
             i += 1
-    
-    # Write resolved content
-    with open(file_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(resolved_lines))
-    
-    print("CHANGELOG.md conflict resolved successfully")
+    with open(full, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + ("\n" if content.endswith("\n") else ""))
+    run(["git", "add", path], cwd=repo_dir, check=False)
+    return changed
 
-def safe_git_operation(command, repo_dir, ignore_errors=False):
-    """Execute git command with error handling."""
-    try:
-        result = subprocess.run(command, cwd=repo_dir, check=not ignore_errors, 
-                              capture_output=True, text=True)
-        if result.returncode != 0 and not ignore_errors:
-            print(f"Git command failed: {' '.join(command)}")
-            print(f"Error: {result.stderr}")
-            return False
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"Git operation failed: {e}")
-        return False
+def cherry_pick_with_conflict_handling(repo_dir: str, shas: List[str], prefer_pr_on_top_changelog: bool = True, take_pr_side_for_others: bool = True) -> None:
+    for sha in shas:
+        code, out, err = run(["git", "cherry-pick", "-x", sha], cwd=repo_dir, check=False)
+        if code == 0:
+            continue
+        # Resolve non-changelog files by side selection
+        _, out2, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+        for f in [f for f in out2.splitlines() if f.strip() and os.path.basename(f) != "CHANGELOG.md"]:
+            run(["git", "checkout", "--theirs" if take_pr_side_for_others else "--ours", f], cwd=repo_dir, check=False)
+            run(["git", "add", f], cwd=repo_dir, check=False)
+        # Resolve changelog
+        resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
+        # Continue or skip
+        code2, outc, errc = run(["git", "cherry-pick", "--continue"], cwd=repo_dir, check=False)
+        if code2 != 0:
+            text = (outc or "") + "\n" + (errc or "")
+            if "The previous cherry-pick is now empty" in text or "nothing to commit" in text:
+                run(["git", "cherry-pick", "--skip"], cwd=repo_dir, check=False)
+            else:
+                raise subprocess.CalledProcessError(code2 or 1, ["git", "cherry-pick", "--continue"], output=outc, stderr=errc)
 
-def handle_backport_pr(owner, repo, repo_dir, pr_details):
-    """Handle a single backport PR with improved conflict resolution."""
-    pr_number = pr_details["number"]
-    pr_branch = pr_details["head"]["ref"]
-    target_branch = pr_details["base"]["ref"]
-    fork_owner = pr_details["head"]["repo"]["owner"]["login"]
-    
-    print(f"Processing Backport PR #{pr_number}: {pr_branch} -> {target_branch}")
-    
-    # Setup git config
+def backport_pr(owner: str, repo: str, repo_dir: str, pr_number: int, target_branch: str) -> None:
     setup_git_config(repo_dir)
-    
-    # Clean working directory
-    safe_git_operation(["git", "reset", "--hard"], repo_dir)
-    safe_git_operation(["git", "clean", "-fd"], repo_dir)
-    
-    # Add the fork as a remote if it's from a fork
-    if fork_owner != owner:
-        fork_remote = f"fork_{fork_owner}"
-        safe_git_operation(["git", "remote", "remove", fork_remote], repo_dir, ignore_errors=True)
-        safe_git_operation(["git", "remote", "add", fork_remote, 
-                          f"https://github.com/{fork_owner}/{repo}.git"], repo_dir)
-        safe_git_operation(["git", "fetch", fork_remote], repo_dir)
-        full_pr_branch = f"{fork_remote}/{pr_branch}"
-    else:
-        full_pr_branch = f"origin/{pr_branch}"
-    
-    # Fetch latest changes
-    safe_git_operation(["git", "fetch", "origin"], repo_dir)
-    
-    # Checkout the target branch and update it
-    if not safe_git_operation(["git", "checkout", target_branch], repo_dir):
-        return False
-    
-    safe_git_operation(["git", "pull", "origin", target_branch], repo_dir)
-    
-    # Get commits from the PR
-    commits = get_pr_commits(owner, repo, pr_number)
-    commit_shas = [commit["sha"] for commit in commits]
-    
-    print(f"Found {len(commit_shas)} commits to cherry-pick")
-    
-    # Cherry-pick each commit individually
-    success = True
-    for i, commit_sha in enumerate(commit_shas):
-        print(f"Cherry-picking commit {i+1}/{len(commit_shas)}: {commit_sha[:8]}")
-        
-        result = subprocess.run(["git", "cherry-pick", commit_sha], 
-                              cwd=repo_dir, capture_output=True, text=True)
-        
-        if result.returncode != 0:
-            print("Conflict detected during cherry-pick")
-            
-            # Check for conflicts in CHANGELOG.md
-            changelog_path = os.path.join(repo_dir, "CHANGELOG.md")
-            if os.path.exists(changelog_path):
-                # Check if CHANGELOG.md has conflicts
-                status_result = subprocess.run(["git", "status", "--porcelain"], 
-                                             cwd=repo_dir, capture_output=True, text=True)
-                if "CHANGELOG.md" in status_result.stdout:
-                    resolve_changelog_conflict_advanced(changelog_path)
-                    safe_git_operation(["git", "add", "CHANGELOG.md"], repo_dir)
-            
-            # Add any other resolved files
-            safe_git_operation(["git", "add", "."], repo_dir)
-            
-            # Try to continue the cherry-pick
-            result = subprocess.run(["git", "cherry-pick", "--continue"], 
-                                  cwd=repo_dir, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                print(f"Failed to resolve conflicts for commit {commit_sha[:8]}")
-                safe_git_operation(["git", "cherry-pick", "--abort"], repo_dir)
-                success = False
-                break
-    
-    if success:
-        # Push the changes
-        remote_url = f"https://{GITHUB_TOKEN}@github.com/{owner}/{repo}.git"
-        safe_git_operation(["git", "remote", "set-url", "origin", remote_url], repo_dir)
-        
-        if safe_git_operation(["git", "push", "origin", target_branch], repo_dir):
-            print(f"Successfully processed Backport PR #{pr_number}")
-            return True
-        else:
-            print(f"Failed to push changes for Backport PR #{pr_number}")
-    
-    return False
+    ensure_clean_repo(repo_dir)
+    run(["git", "fetch", "--all", "--prune"], cwd=repo_dir, check=False)
+    run(["git", "checkout", target_branch], cwd=repo_dir)
+    run(["git", "pull", "--ff-only"], cwd=repo_dir, check=False)
 
-def main_backport(owner, repo, repo_dir):
-    """Main function to handle backport PRs"""
-    print("Backport PRs script starting...")
-    
-    if not GITHUB_TOKEN:
-        print("Error: GITHUB_TOKEN environment variable is not set")
-        sys.exit(1)
-    
-    try:
-        backport_prs = fetch_backport_prs(owner, repo)
-        print(f"Found {len(backport_prs)} backport PRs")
-        
-        if not backport_prs:
-            print("No backport PRs found")
-            return
-        
-        success_count = 0
-        for pr in backport_prs:
-            pr_number = pr["number"]
-            print(f"\n--- Processing PR #{pr_number} ---")
-            
-            try:
-                pr_details = fetch_pr_details(owner, repo, pr_number)
-                
-                if handle_backport_pr(owner, repo, repo_dir, pr_details):
-                    success_count += 1
-                    print(f"✓ Successfully processed Backport PR #{pr_number}")
-                else:
-                    print(f"✗ Failed to process Backport PR #{pr_number}")
-                    
-            except Exception as e:
-                print(f"✗ Error processing PR #{pr_number}: {e}")
-        
-        print(f"\n--- Summary ---")
-        print(f"Successfully processed {success_count}/{len(backport_prs)} backport PRs")
-        
-    except Exception as e:
-        print(f"Error in backport processing: {e}")
-        sys.exit(1)
+    pr = fetch_pr(owner, repo, pr_number)
+    shas = list_commits_for_pr(owner, repo, pr_number)
+
+    new_branch = f"backport-{pr_number}-to-{target_branch}"
+    run(["git", "checkout", "-b", new_branch], cwd=repo_dir, check=False)
+
+    cherry_pick_with_conflict_handling(repo_dir, shas, prefer_pr_on_top_changelog=True, take_pr_side_for_others=True)
+
+    run(["git", "push", "-u", "origin", new_branch], cwd=repo_dir, check=False)
+    abort_in_progress_ops(repo_dir)
+    print(f"✅ Backport branch pushed: {new_branch}")
+
+def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Backport a PR to a target branch with robust conflict handling.")
+    ap.add_argument("owner")
+    ap.add_argument("repo")
+    ap.add_argument("repo_dir")
+    ap.add_argument("--pr", type=int, required=True)
+    ap.add_argument("--target", required=True, help="Target backport branch, e.g., 2.x")
+    args = ap.parse_args()
+    backport_pr(args.owner, args.repo, args.repo_dir, args.pr, args.target)
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python BackportPRs.py <owner> <repo> <repo_directory>")
-        print("Example: python BackportPRs.py opensearch-project OpenSearch /path/to/repo")
-        sys.exit(1)
-    
-    owner = sys.argv[1]
-    repo = sys.argv[2]
-    repo_dir = sys.argv[3]
-    
-    if not os.path.exists(repo_dir):
-        print(f"Error: Repository directory '{repo_dir}' does not exist")
-        sys.exit(1)
-    
-    main_backport(owner, repo, repo_dir)
+    main()

@@ -1,335 +1,230 @@
+#!/usr/bin/env python3
 import os
-import requests
+import json
 import subprocess
 import sys
+import shlex
+from typing import List, Tuple, Optional
 
-GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
 BASE_URL = "https://api.github.com"
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+HEADERS = {
+    "Accept": "application/vnd.github+json",
+    **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}),
+}
 
-def setup_git_config(repo_dir):
-    """Setup git configuration for the repository."""
-    subprocess.run(["git", "config", "user.name", "OpenSearch Bot"], cwd=repo_dir, check=True)
-    subprocess.run(["git", "config", "user.email", "opensearch-bot@amazon.com"], cwd=repo_dir, check=True)
+def run(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -> Tuple[int, str, str]:
+    """Run a subprocess and return (code, out, err)."""
+    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    out, err = p.communicate()
+    if check and p.returncode != 0:
+        raise subprocess.CalledProcessError(p.returncode, cmd, output=out, stderr=err)
+    return p.returncode, out, err
 
-def fetch_pr_details(owner, repo, pr_number):
-    """Fetch PR details to get source and target branches"""
+def log(cmd: List[str]) -> None:
+    print(f"$ {' '.join(shlex.quote(c) for c in cmd)}")
+
+def setup_git_config(repo_dir: str) -> None:
+    run(["git", "config", "user.name", "OpenSearch Bot"], cwd=repo_dir, check=False)
+    run(["git", "config", "user.email", "opensearch-bot@amazon.com"], cwd=repo_dir, check=False)
+    run(["git", "config", "rerere.enabled", "true"], cwd=repo_dir, check=False)
+
+def abort_in_progress_ops(repo_dir: str) -> None:
+    """Best-effort abort of any in-progress git ops that could poison a new rebase."""
+    for cmd in [
+        ["git", "rebase", "--abort"],
+        ["git", "cherry-pick", "--abort"],
+        ["git", "am", "--abort"],
+        ["git", "merge", "--abort"],
+    ]:
+        run(cmd, cwd=repo_dir, check=False)
+
+def ensure_clean_repo(repo_dir: str) -> None:
+    abort_in_progress_ops(repo_dir)
+    run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
+    run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
+
+def fetch_pr_details(owner: str, repo: str, pr_number: int) -> dict:
+    import requests
     url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}"
-    response = requests.get(url, headers=HEADERS)
-    response.raise_for_status()
-    return response.json()
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-def fetch_stalled_prs(owner, repo):
-    """Fetch stalled PRs with the `stalled` label"""
-    url = f"{BASE_URL}/search/issues"
-    query = f"repo:{owner}/{repo} label:stalled is:pr is:open"
-    response = requests.get(url, headers=HEADERS, params={"q": query})
-    response.raise_for_status()
-    return response.json()["items"]
+def checkout_pr(repo_dir: str, pr_head_repo_clone_url: str, pr_head_ref: str, local_branch: str) -> None:
+    # Ensure remotes are present/fresh
+    run(["git", "remote", "-v"], cwd=repo_dir, check=False)
+    # Fetch remote PR head
+    run(["git", "fetch", pr_head_repo_clone_url, f"{pr_head_ref}:{local_branch}"], cwd=repo_dir)
+    run(["git", "checkout", local_branch], cwd=repo_dir)
 
-def resolve_changelog_conflict_advanced(file_path):
-    """Advanced changelog conflict resolution that preserves chronological order."""
-    if not os.path.exists(file_path):
-        print(f"Warning: {file_path} does not exist")
-        return
-    
-    with open(file_path, 'r', encoding='utf-8') as f:
+def resolve_changelog_conflict(repo_dir: str, path: str = "CHANGELOG.md", prefer_pr_on_top: bool = True) -> bool:
+    """
+    Resolve a typical conflict block in CHANGELOG.md by concatenating both sides
+    in a deterministic order. Return True if conflict was found and resolved.
+    prefer_pr_on_top=True keeps PR (theirs during rebase) entries before main.
+    """
+    full = os.path.join(repo_dir, path)
+    if not os.path.exists(full):
+        return False
+    with open(full, "r", encoding="utf-8") as f:
         content = f.read()
-    
-    # Check if there are conflict markers
-    if not ('<<<<<<< ' in content and '=======' in content and '>>>>>>> ' in content):
-        print("No conflict markers found in CHANGELOG.md")
-        return
-    
-    print("Resolving CHANGELOG.md conflicts...")
-    
-    # Split content by conflict blocks
-    lines = content.split('\n')
-    resolved_lines = []
+    if "<<<<<<< " not in content:
+        return False
+
+    lines = content.splitlines()
+    out = []
     i = 0
-    
+    changed = False
     while i < len(lines):
         line = lines[i]
-        
-        if line.startswith('<<<<<<< '):
-            # Start of conflict block
+        if line.startswith("<<<<<<< "):
+            changed = True
+            ours = []
+            theirs = []
             i += 1
-            head_changes = []
-            
-            # Collect HEAD changes (current branch)
-            while i < len(lines) and not lines[i].startswith('======='):
-                head_changes.append(lines[i])
-                i += 1
-            
-            # Skip the separator
-            i += 1
-            incoming_changes = []
-            
-            # Collect incoming changes (from main/target branch)
-            while i < len(lines) and not lines[i].startswith('>>>>>>> '):
-                incoming_changes.append(lines[i])
-                i += 1
-            
-            # Skip the end marker
-            i += 1
-            
-            # For stalled PRs, we want to keep PR changes on top of main branch changes
-            # So we put incoming (main) changes first, then PR changes
-            resolved_lines.extend(incoming_changes)
-            resolved_lines.extend(head_changes)
-            
+            # collect ours
+            while i < len(lines) and not lines[i].startswith("======="):
+                ours.append(lines[i]); i += 1
+            i += 1  # skip =======
+            # collect theirs
+            while i < len(lines) and not lines[i].startswith(">>>>>>> "):
+                theirs.append(lines[i]); i += 1
+            i += 1  # skip >>>>>>>
+            if prefer_pr_on_top:
+                out.extend(theirs)  # PR side first during rebase
+                out.extend(ours)
+            else:
+                out.extend(ours)
+                out.extend(theirs)
         else:
-            resolved_lines.append(line)
+            out.append(line)
             i += 1
-    
-    # Write resolved content
-    with open(file_path, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(resolved_lines))
-    
-    print("CHANGELOG.md conflict resolved successfully")
+    with open(full, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + ("\n" if content.endswith("\n") else ""))
+    run(["git", "add", path], cwd=repo_dir)
+    return changed
 
-def safe_git_operation(command, repo_dir, ignore_errors=False):
-    """Execute git command with error handling."""
-    try:
-        result = subprocess.run(command, cwd=repo_dir, check=not ignore_errors, 
-                              capture_output=True, text=True)
-        if result.returncode != 0 and not ignore_errors:
-            print(f"Git command failed: {' '.join(command)}")
-            print(f"Error: {result.stderr}")
-            return False
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"Git operation failed: {e}")
-        return False
+def add_all_conflicted_files(repo_dir: str, take_pr_side: bool = True, exclude_changelog: bool = True) -> List[str]:
+    """
+    Auto-resolve conflicts by taking the PR side (theirs during rebase) or target side (ours).
+    Returns list of files resolved.
+    """
+    # List conflicted files
+    _, out, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+    files = [f for f in out.splitlines() if f.strip()]
+    resolved = []
+    for fpath in files:
+        if exclude_changelog and os.path.basename(fpath) == "CHANGELOG.md":
+            continue
+        if take_pr_side:
+            run(["git", "checkout", "--theirs", fpath], cwd=repo_dir, check=False)  # PR side during rebase
+        else:
+            run(["git", "checkout", "--ours", fpath], cwd=repo_dir, check=False)   # target branch side
+        run(["git", "add", fpath], cwd=repo_dir, check=False)
+        resolved.append(fpath)
+    return resolved
 
-def check_for_conflicts(repo_dir):
-    """Check if there are any unresolved conflicts."""
-    result = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"], 
-                          cwd=repo_dir, capture_output=True, text=True)
-    if result.returncode == 0:
-        conflicted_files = result.stdout.strip().split('\n') if result.stdout.strip() else []
-        return [f for f in conflicted_files if f]
-    return []
+def continue_or_skip_rebase(repo_dir: str) -> None:
+    """Try to continue rebase; if git reports nothing to commit, skip."""
+    code, out, err = run(["git", "rebase", "--continue"], cwd=repo_dir, check=False)
+    if code == 0:
+        return
+    text = (out or "") + "\n" + (err or "")
+    if "No changes" in text or "nothing to commit" in text or "You must edit all merge conflicts" in text:
+        # If nothing to commit, or user forgot to add files, try skip
+        run(["git", "rebase", "--skip"], cwd=repo_dir, check=False)
+    else:
+        # Surface the failure
+        raise subprocess.CalledProcessError(code or 1, ["git", "rebase", "--continue"], output=out, stderr=err)
 
-def handle_stalled_pr(owner, repo, repo_dir, pr_details):
-    """Handle a single stalled PR with improved rebasing."""
-    pr_number = pr_details["number"]
-    pr_branch = pr_details["head"]["ref"]
-    target_branch = pr_details["base"]["ref"]
-    fork_owner = pr_details["head"]["repo"]["owner"]["login"]
-    
-    print(f"Processing Stalled PR #{pr_number}: {pr_branch} -> {target_branch}")
-    print(f"Fork owner: {fork_owner}, Repo owner: {owner}")
-    
-    # Setup git config
+def rebase_pr_onto_target(repo_dir: str, pr_branch: str, target_branch: str, prefer_pr_on_top_changelog: bool = True, take_pr_side_for_others: bool = True) -> None:
+    # Make sure target is up to date
+    run(["git", "fetch", "--all", "--prune"], cwd=repo_dir, check=False)
+    run(["git", "checkout", target_branch], cwd=repo_dir)
+    run(["git", "pull", "--ff-only"], cwd=repo_dir, check=False)
+
+    # Switch to PR branch and rebase
+    run(["git", "checkout", pr_branch], cwd=repo_dir)
+    abort_in_progress_ops(repo_dir)
+    code, out, err = run(["git", "rebase", target_branch], cwd=repo_dir, check=False)
+    if code == 0:
+        return  # clean rebase
+
+    # Conflict path
+    # First, try resolving non-changelog conflicts via side selection
+    add_all_conflicted_files(repo_dir, take_pr_side=take_pr_side_for_others, exclude_changelog=True)
+    # Then handle CHANGELOG deterministically
+    resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
+    # Continue or skip
+    continue_or_skip_rebase(repo_dir)
+
+    # If more conflicts appear in subsequent commits, loop until done
+    while True:
+        _, conflicts, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+        if not conflicts.strip():
+            break
+        add_all_conflicted_files(repo_dir, take_pr_side=take_pr_side_for_others, exclude_changelog=True)
+        resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
+        continue_or_skip_rebase(repo_dir)
+
+def force_push(repo_dir: str, branch: str) -> None:
+    run(["git", "push", "--force-with-lease", "origin", f"{branch}:{branch}"], cwd=repo_dir)
+
+def main() -> None:
+    import argparse
+    ap = argparse.ArgumentParser(description="Rebase PR branch onto target branch and resolve common conflicts.")
+    ap.add_argument("owner", help="GitHub org/owner of the base repository (e.g., opensearch-project)")
+    ap.add_argument("repo", help="GitHub repository name (e.g., OpenSearch)")
+    ap.add_argument("repo_dir", help="Local path to a checkout of the base repository")
+    ap.add_argument("--pr", type=int, required=True, help="Pull request number to operate on")
+    ap.add_argument("--target", default="main", help="Target branch to rebase onto (default: main)")
+    ap.add_argument("--prefer-pr-on-top-changelog", action="store_true", help="Keep PR CHANGELOG entries above main entries during conflict resolution")
+    ap.add_argument("--take-pr-side", action="store_true", help="When non-CHANGELOG conflicts occur during rebase, prefer the PR side")
+    args = ap.parse_args()
+
+    owner, repo, repo_dir = args.owner, args.repo, args.repo_dir
+    pr_number = args.pr
+    target_branch = args.target
+    prefer_pr = args.prefer_pr_on_top_changelog
+    take_pr_side = args.take_pr_side
+
+    if not os.path.isdir(repo_dir):
+        print(f"Repository directory not found: {repo_dir}")
+        sys.exit(2)
+
     setup_git_config(repo_dir)
-    
-    # Clean working directory
-    safe_git_operation(["git", "reset", "--hard"], repo_dir, ignore_errors=True)
-    safe_git_operation(["git", "clean", "-fd"], repo_dir, ignore_errors=True)
-    
-    # Add the fork as a remote if it's from a fork
-    fork_remote = None
-    if fork_owner != owner:
-        fork_remote = f"fork_{fork_owner}"
-        safe_git_operation(["git", "remote", "remove", fork_remote], repo_dir, ignore_errors=True)
-        if not safe_git_operation(["git", "remote", "add", fork_remote, 
-                                 f"https://github.com/{fork_owner}/{repo}.git"], repo_dir):
-            print(f"Failed to add fork remote for {fork_owner}")
-            return False
-        
-        if not safe_git_operation(["git", "fetch", fork_remote], repo_dir):
-            print(f"Failed to fetch from fork remote")
-            return False
-        
-        full_pr_branch = f"{fork_remote}/{pr_branch}"
-    else:
-        safe_git_operation(["git", "fetch", "origin"], repo_dir)
-        full_pr_branch = f"origin/{pr_branch}"
-    
-    # Create a local branch for the PR
-    local_branch = f"local_stalled_{pr_number}"
-    safe_git_operation(["git", "branch", "-D", local_branch], repo_dir, ignore_errors=True)
-    
-    if not safe_git_operation(["git", "checkout", "-b", local_branch, full_pr_branch], repo_dir):
-        print(f"Failed to checkout PR branch {full_pr_branch}")
-        return False
-    
-    # Fetch latest target branch
-    if not safe_git_operation(["git", "fetch", "origin", target_branch], repo_dir):
-        print(f"Failed to fetch target branch {target_branch}")
-        return False
-    
-    print(f"Starting rebase of {local_branch} onto origin/{target_branch}")
-    
-    # Attempt rebase
-    result = subprocess.run(["git", "rebase", f"origin/{target_branch}"], 
-                          cwd=repo_dir, capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        print("Conflicts detected during rebase")
-        
-        # Handle conflicts in a loop until rebase is complete
-        max_attempts = 10  # Prevent infinite loops
-        attempts = 0
-        
-        while attempts < max_attempts:
-            attempts += 1
-            print(f"Conflict resolution attempt {attempts}")
-            
-            # Check for conflicted files
-            conflicted_files = check_for_conflicts(repo_dir)
-            print(f"Conflicted files: {conflicted_files}")
-            
-            if not conflicted_files:
-                # No more conflicts, try to continue
-                continue_result = subprocess.run(["git", "rebase", "--continue"], 
-                                               cwd=repo_dir, capture_output=True, text=True)
-                if continue_result.returncode == 0:
-                    print("Rebase completed successfully")
-                    break
-                elif "No changes" in continue_result.stdout or "nothing to commit" in continue_result.stdout:
-                    # Skip this commit
-                    print("Skipping empty commit")
-                    safe_git_operation(["git", "rebase", "--skip"], repo_dir)
-                    continue
-                else:
-                    print(f"Failed to continue rebase: {continue_result.stderr}")
-                    safe_git_operation(["git", "rebase", "--abort"], repo_dir)
-                    return False
-            
-            # Resolve conflicts
-            conflict_resolved = False
-            for file_path in conflicted_files:
-                full_file_path = os.path.join(repo_dir, file_path)
-                
-                if file_path == "CHANGELOG.md":
-                    print(f"Resolving CHANGELOG.md conflict")
-                    resolve_changelog_conflict_advanced(full_file_path)
-                    safe_git_operation(["git", "add", "CHANGELOG.md"], repo_dir)
-                    conflict_resolved = True
-                else:
-                    # For other files, try to automatically resolve by taking the PR version
-                    print(f"Auto-resolving conflict in {file_path} (taking PR version)")
-                    safe_git_operation(["git", "checkout", "--theirs", file_path], repo_dir)
-                    safe_git_operation(["git", "add", file_path], repo_dir)
-                    conflict_resolved = True
-            
-            if not conflict_resolved:
-                print("Could not resolve conflicts automatically")
-                safe_git_operation(["git", "rebase", "--abort"], repo_dir)
-                return False
-        
-        if attempts >= max_attempts:
-            print("Max conflict resolution attempts reached")
-            safe_git_operation(["git", "rebase", "--abort"], repo_dir)
-            return False
-    else:
-        print("Rebase completed without conflicts")
-    
-    # Push the rebased branch
-    success = False
-    if fork_owner != owner and fork_remote:
-        # Push to the fork
-        print(f"Pushing to fork: {fork_owner}/{repo}")
-        fork_remote_url = f"https://{GITHUB_TOKEN}@github.com/{fork_owner}/{repo}.git"
-        
-        if safe_git_operation(["git", "remote", "set-url", fork_remote, fork_remote_url], repo_dir):
-            if safe_git_operation(["git", "push", "--force-with-lease", fork_remote, 
-                                 f"{local_branch}:{pr_branch}"], repo_dir):
-                print(f"Successfully pushed to fork")
-                success = True
-            else:
-                # Try regular force push if force-with-lease fails
-                if safe_git_operation(["git", "push", "--force", fork_remote, 
-                                     f"{local_branch}:{pr_branch}"], repo_dir):
-                    print(f"Successfully force pushed to fork")
-                    success = True
-    else:
-        # Push to origin (same repo)
-        print(f"Pushing to origin: {owner}/{repo}")
-        remote_url = f"https://{GITHUB_TOKEN}@github.com/{owner}/{repo}.git"
-        
-        if safe_git_operation(["git", "remote", "set-url", "origin", remote_url], repo_dir):
-            if safe_git_operation(["git", "push", "--force-with-lease", "origin", 
-                                 f"{local_branch}:{pr_branch}"], repo_dir):
-                print(f"Successfully pushed to origin")
-                success = True
-            else:
-                # Try regular force push if force-with-lease fails
-                if safe_git_operation(["git", "push", "--force", "origin", 
-                                     f"{local_branch}:{pr_branch}"], repo_dir):
-                    print(f"Successfully force pushed to origin")
-                    success = True
-    
-    # Cleanup
-    safe_git_operation(["git", "checkout", target_branch], repo_dir, ignore_errors=True)
-    safe_git_operation(["git", "branch", "-D", local_branch], repo_dir, ignore_errors=True)
-    
-    if success:
-        print(f"Successfully rebased Stalled PR #{pr_number}")
-        return True
-    else:
-        print(f"Failed to push rebased changes for Stalled PR #{pr_number}")
-        return False
+    ensure_clean_repo(repo_dir)
 
-def main_stalled(owner, repo, repo_dir):
-    """Main function to handle stalled PRs"""
-    print("Stalled PRs script starting...")
-    
-    if not GITHUB_TOKEN:
-        print("Error: GITHUB_TOKEN environment variable is not set")
-        sys.exit(1)
-    
-    try:
-        stalled_prs = fetch_stalled_prs(owner, repo)
-        print(f"Found {len(stalled_prs)} stalled PRs")
-        
-        if not stalled_prs:
-            print("No stalled PRs found")
-            return
-        
-        success_count = 0
-        for pr in stalled_prs:
-            pr_number = pr["number"]
-            print(f"\n--- Processing PR #{pr_number} ---")
-            
-            try:
-                pr_details = fetch_pr_details(owner, repo, pr_number)
-                
-                # Skip closed or merged PRs
-                if pr_details["state"] != "open":
-                    print(f"Skipping PR #{pr_number} - not open (state: {pr_details['state']})")
-                    continue
-                
-                if handle_stalled_pr(owner, repo, repo_dir, pr_details):
-                    success_count += 1
-                    print(f"✓ Successfully processed Stalled PR #{pr_number}")
-                else:
-                    print(f"✗ Failed to process Stalled PR #{pr_number}")
-                    
-            except Exception as e:
-                print(f"✗ Error processing PR #{pr_number}: {e}")
-        
-        print(f"\n--- Summary ---")
-        print(f"Successfully processed {success_count}/{len(stalled_prs)} stalled PRs")
-        
-    except Exception as e:
-        print(f"Error in stalled PR processing: {e}")
-        sys.exit(1)
+    # Pull PR details
+    pr = fetch_pr_details(owner, repo, pr_number)
+    head = pr["head"]
+    base = pr["base"]
+    pr_head_repo_clone = head["repo"]["clone_url"]
+    pr_head_ref = head["ref"]
+    pr_branch = f"pr-{pr_number}-{pr_head_ref}"
+
+    print(f"Handling PR #{pr_number}: {pr_head_ref} -> {base['ref']}")
+    checkout_pr(repo_dir, pr_head_repo_clone, pr_head_ref, pr_branch)
+
+    # Ensure we have the up-to-date target
+    run(["git", "fetch", "origin", target_branch], cwd=repo_dir)
+    run(["git", "checkout", pr_branch], cwd=repo_dir)
+
+    # Perform the rebase with robust conflict handling
+    rebase_pr_onto_target(repo_dir, pr_branch, target_branch, prefer_pr_on_top_changelog=prefer_pr, take_pr_side_for_others=take_pr_side)
+
+    # Push back to the PR branch on the contributor's fork if possible; otherwise push to origin if same repo
+    # Determine remote of the pr_branch
+    # Try pushing to the head fork (best effort); if it fails, push to origin matching branch name
+    code, _, _ = run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd=repo_dir, check=False)
+    # Regardless of upstream, push to origin/<pr_head_ref> when the PR originates from same repo; otherwise, push to the fork remote name if configured.
+    # As a simple default, push to origin with the same branch name:
+    force_push(repo_dir, pr_branch)
+
+    # Cleanup safety
+    abort_in_progress_ops(repo_dir)
+    print("✅ Rebase completed and force-pushed.")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print("Usage: python StalledPRs.py <owner> <repo> <repo_directory>")
-        print("Example: python StalledPRs.py opensearch-project OpenSearch /path/to/repo")
-        sys.exit(1)
-    
-    owner = sys.argv[1]
-    repo = sys.argv[2]
-    repo_dir = sys.argv[3]
-    
-    if not os.path.exists(repo_dir):
-        print(f"Error: Repository directory '{repo_dir}' does not exist")
-        sys.exit(1)
-    
-    main_stalled(owner, repo, repo_dir)
+    main()
