@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 import os
-import json
 import subprocess
 import sys
-import shlex
 from typing import List, Tuple, Optional
 
 BASE_URL = "https://api.github.com"
@@ -26,13 +24,16 @@ def setup_git_config(repo_dir: str) -> None:
     run(["git", "config", "rerere.enabled", "true"], cwd=repo_dir, check=False)
 
 def abort_in_progress_ops(repo_dir: str) -> None:
-    for cmd in [
+    for cmd in (
         ["git", "rebase", "--abort"],
         ["git", "cherry-pick", "--abort"],
         ["git", "am", "--abort"],
         ["git", "merge", "--abort"],
-    ]:
+    ):
         run(cmd, cwd=repo_dir, check=False)
+    rebase_dir = os.path.join(repo_dir, ".git", "rebase-merge")
+    if os.path.isdir(rebase_dir):
+        import shutil; shutil.rmtree(rebase_dir, ignore_errors=True)
 
 def ensure_clean_repo(repo_dir: str) -> None:
     abort_in_progress_ops(repo_dir)
@@ -95,10 +96,10 @@ def resolve_changelog_conflict(repo_dir: str, path: str = "CHANGELOG.md", prefer
 
 def cherry_pick_with_conflict_handling(repo_dir: str, shas: List[str], prefer_pr_on_top_changelog: bool = True, take_pr_side_for_others: bool = True) -> None:
     for sha in shas:
-        code, out, err = run(["git", "cherry-pick", "-x", sha], cwd=repo_dir, check=False)
+        code, _, _ = run(["git", "cherry-pick", "-x", sha], cwd=repo_dir, check=False)
         if code == 0:
             continue
-        # Resolve non-changelog files by side selection
+        # Resolve normal files
         _, out2, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
         for f in [f for f in out2.splitlines() if f.strip() and os.path.basename(f) != "CHANGELOG.md"]:
             run(["git", "checkout", "--theirs" if take_pr_side_for_others else "--ours", f], cwd=repo_dir, check=False)
@@ -117,15 +118,16 @@ def cherry_pick_with_conflict_handling(repo_dir: str, shas: List[str], prefer_pr
 def backport_pr(owner: str, repo: str, repo_dir: str, pr_number: int, target_branch: str) -> None:
     setup_git_config(repo_dir)
     ensure_clean_repo(repo_dir)
+
+    # Ensure target exists locally and create a dedicated backport branch
     run(["git", "fetch", "--all", "--prune"], cwd=repo_dir, check=False)
     run(["git", "checkout", target_branch], cwd=repo_dir)
     run(["git", "pull", "--ff-only"], cwd=repo_dir, check=False)
-
-    pr = fetch_pr(owner, repo, pr_number)
-    shas = list_commits_for_pr(owner, repo, pr_number)
-
     new_branch = f"backport-{pr_number}-to-{target_branch}"
-    run(["git", "checkout", "-b", new_branch], cwd=repo_dir, check=False)
+    run(["git", "checkout", "-B", new_branch], cwd=repo_dir, check=False)
+
+    _ = fetch_pr(owner, repo, pr_number)
+    shas = list_commits_for_pr(owner, repo, pr_number)
 
     cherry_pick_with_conflict_handling(repo_dir, shas, prefer_pr_on_top_changelog=True, take_pr_side_for_others=True)
 
@@ -140,7 +142,7 @@ def main() -> None:
     ap.add_argument("repo")
     ap.add_argument("repo_dir")
     ap.add_argument("--pr", type=int, required=True)
-    ap.add_argument("--target", required=True, help="Target backport branch, e.g., 2.x")
+    ap.add_argument("--target", required=True, help="Target backport branch, e.g., 2.x-maintenance")
     args = ap.parse_args()
     backport_pr(args.owner, args.repo, args.repo_dir, args.pr, args.target)
 
