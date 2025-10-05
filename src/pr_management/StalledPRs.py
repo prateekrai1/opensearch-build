@@ -1,90 +1,80 @@
 #!/usr/bin/env python3
+
 import os
-import subprocess
 import sys
-import shlex
-from typing import List, Tuple, Optional
+import subprocess
+import logging
+import requests
+from typing import List, Optional
+
+logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 
 BASE_URL = "https://api.github.com"
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+
 HEADERS = {
     "Accept": "application/vnd.github+json",
-    **({"Authorization": f"Bearer {GITHUB_TOKEN}"} if GITHUB_TOKEN else {}),
+    "Authorization": f"Bearer {GITHUB_TOKEN}" if GITHUB_TOKEN else "",
 }
 
-def run(cmd: List[str], cwd: Optional[str] = None, check: bool = True) -> Tuple[int, str, str]:
-    p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    out, err = p.communicate()
-    if check and p.returncode != 0:
-        raise subprocess.CalledProcessError(p.returncode, cmd, output=out, stderr=err)
-    return p.returncode, out, err
-
-def setup_git_config(repo_dir: str) -> None:
-    run(["git", "config", "user.name", "OpenSearch Bot"], cwd=repo_dir, check=False)
-    run(["git", "config", "user.email", "opensearch-bot@amazon.com"], cwd=repo_dir, check=False)
-    run(["git", "config", "rerere.enabled", "true"], cwd=repo_dir, check=False)
-
-def abort_in_progress_ops(repo_dir: str) -> None:
-    # Abort/cleanup any previous operations so we never inherit stale state
-    for cmd in (
+def safe_cleanup_git_state(repo_dir):
+    for dir_name in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "MERGE_HEAD", "AM_HEAD"]:
+        path = os.path.join(repo_dir, ".git", dir_name)
+        if os.path.exists(path):
+            logging.warning(f"Removing stale git state: {path}")
+            if os.path.isdir(path):
+                import shutil
+                shutil.rmtree(path)
+            else:
+                os.remove(path)
+    for cmd in [
         ["git", "rebase", "--abort"],
         ["git", "cherry-pick", "--abort"],
-        ["git", "am", "--abort"],
         ["git", "merge", "--abort"],
-    ):
-        run(cmd, cwd=repo_dir, check=False)
-    # Remove rebase-merge directory if left behind
-    rebase_dir = os.path.join(repo_dir, ".git", "rebase-merge")
-    if os.path.isdir(rebase_dir):
-        import shutil
-        shutil.rmtree(rebase_dir, ignore_errors=True)
+        ["git", "am", "--abort"]
+    ]:
+        subprocess.run(cmd, cwd=repo_dir, check=False)
+    subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
+    subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
 
-def ensure_clean_repo(repo_dir: str) -> None:
-    abort_in_progress_ops(repo_dir)
-    run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
-    run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
+def run(cmd: List[str], cwd: Optional[str] = None, check=True) -> subprocess.CompletedProcess:
+    logging.info(f"Running command: {' '.join(cmd)}")
+    return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
 
-def fetch_pr_details(owner: str, repo: str, pr_number: int) -> dict:
-    import requests
-    url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}"
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    return r.json()
+def git_config(repo_dir: str):
+    configs = [
+        ("user.name", "OpenSearch Bot"),
+        ("user.email", "opensearch-bot@amazon.com"),
+        ("rerere.enabled", "true"),
+    ]
+    for key, value in configs:
+        run(["git", "config", key, value], cwd=repo_dir, check=False)
 
-def checkout_pr(repo_dir: str, pr_head_repo_clone_url: str, pr_head_ref: str, local_branch: str) -> None:
-    # Create/update a 'head' remote for the PR source repo and fetch the PR head ref
-    code, out, _ = run(["git", "remote"], cwd=repo_dir, check=False)
-    remotes = out.split()
-    if "head" not in remotes:
-        run(["git", "remote", "add", "head", pr_head_repo_clone_url], cwd=repo_dir, check=False)
-    else:
-        run(["git", "remote", "set-url", "head", pr_head_repo_clone_url], cwd=repo_dir, check=False)
-    run(["git", "fetch", "head", f"{pr_head_ref}:{local_branch}"], cwd=repo_dir)
-    run(["git", "checkout", local_branch], cwd=repo_dir)
+def get_pr(owner: str, repo: str, pr_num: int):
+    url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_num}"
+    resp = requests.get(url, headers=HEADERS)
+    resp.raise_for_status()
+    return resp.json()
 
-def resolve_changelog_conflict(repo_dir: str, path: str = "CHANGELOG.md", prefer_pr_on_top: bool = True) -> bool:
-    """
-    Resolve a typical conflict block in CHANGELOG.md by concatenating both sides
-    in a deterministic order. Return True if conflict was found and resolved.
-    prefer_pr_on_top=True keeps PR (theirs during rebase) entries before main.
-    """
-    full = os.path.join(repo_dir, path)
-    if not os.path.exists(full):
-        return False
-    with open(full, "r", encoding="utf-8") as f:
+def checkout_branches(repo_dir: str, remote_url: str, remote_ref: str, branch: str):
+    run(["git", "remote", "add", "head", remote_url], cwd=repo_dir, check=False)
+    run(["git", "fetch", "head", f"{remote_ref}:{branch}"], cwd=repo_dir)
+    run(["git", "checkout", branch], cwd=repo_dir)
+
+def resolve_changelog(repo_dir: str, prefer_theirs=True):
+    path = os.path.join(repo_dir, "CHANGELOG.md")
+    if not os.path.isfile(path):
+        return
+    with open(path) as f:
         content = f.read()
     if "<<<<<<< " not in content:
-        return False
+        return
     lines = content.splitlines()
-    out = []
+    new_lines = []
     i = 0
-    changed = False
     while i < len(lines):
-        line = lines[i]
-        if line.startswith("<<<<<<< "):
-            changed = True
-            ours = []
-            theirs = []
+        if lines[i].startswith("<<<<<<< "):
+            ours, theirs = [], []
             i += 1
             while i < len(lines) and not lines[i].startswith("======="):
                 ours.append(lines[i]); i += 1
@@ -92,110 +82,69 @@ def resolve_changelog_conflict(repo_dir: str, path: str = "CHANGELOG.md", prefer
             while i < len(lines) and not lines[i].startswith(">>>>>>> "):
                 theirs.append(lines[i]); i += 1
             i += 1
-            if prefer_pr_on_top:
-                out.extend(theirs)  # PR side first during rebase
-                out.extend(ours)
+            if prefer_theirs:
+                new_lines.extend(theirs)
+                new_lines.extend(ours)
             else:
-                out.extend(ours)
-                out.extend(theirs)
+                new_lines.extend(ours)
+                new_lines.extend(theirs)
         else:
-            out.append(line)
+            new_lines.append(lines[i])
             i += 1
-    with open(full, "w", encoding="utf-8") as f:
-        f.write("\n".join(out) + ("\n" if content.endswith("\n") else ""))
-    run(["git", "add", path], cwd=repo_dir, check=False)
-    return changed
+    with open(path, "w") as f:
+        f.write("\n".join(new_lines) + ("\n" if content[-1:] == "\n" else ""))
+    run(["git", "add", "CHANGELOG.md"], cwd=repo_dir)
 
-def add_all_conflicted_files(repo_dir: str, take_pr_side: bool = True, exclude_changelog: bool = True) -> None:
-    _, out, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
-    files = [f for f in out.splitlines() if f.strip()]
-    for fpath in files:
-        if exclude_changelog and os.path.basename(fpath) == "CHANGELOG.md":
-            continue
-        run(["git", "checkout", "--theirs" if take_pr_side else "--ours", fpath], cwd=repo_dir, check=False)
-        run(["git", "add", fpath], cwd=repo_dir, check=False)
+def resolve_all_conflicts(repo_dir: str):
+    result = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir)
+    for fname in result.stdout.splitlines():
+        if fname == "CHANGELOG.md": continue
+        run(["git", "checkout", "--theirs", fname], cwd=repo_dir)
+        run(["git", "add", fname], cwd=repo_dir)
 
-def continue_or_skip_rebase(repo_dir: str) -> None:
-    code, out, err = run(["git", "rebase", "--continue"], cwd=repo_dir, check=False)
-    if code == 0:
-        return
-    text = (out or "") + "\n" + (err or "")
-    if ("No changes" in text) or ("nothing to commit" in text) or ("previous cherry-pick is now empty" in text):
-        run(["git", "rebase", "--skip"], cwd=repo_dir, check=False)
-    else:
-        raise subprocess.CalledProcessError(code or 1, ["git", "rebase", "--continue"], output=out, stderr=err)
-
-def rebase_pr_onto_target(repo_dir: str, pr_branch: str, target_branch: str, prefer_pr_on_top_changelog: bool = True, take_pr_side_for_others: bool = True) -> None:
-    run(["git", "fetch", "--all", "--prune"], cwd=repo_dir, check=False)
+def rebase_and_resolve(repo_dir: str, pr_branch: str, target_branch: str):
     run(["git", "checkout", target_branch], cwd=repo_dir)
-    run(["git", "pull", "--ff-only"], cwd=repo_dir, check=False)
+    run(["git", "pull", "--ff-only"], cwd=repo_dir)
     run(["git", "checkout", pr_branch], cwd=repo_dir)
+    safe_cleanup_git_state(repo_dir)
+    result = run(["git", "rebase", target_branch], cwd=repo_dir, check=False)
+    if result.returncode:
+        resolve_all_conflicts(repo_dir)
+        resolve_changelog(repo_dir)
+        # After resolving, check again if conflicts remain
+        files = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
+        if files.stdout.strip():
+            logging.error("Unresolved conflicts remain, aborting.")
+            run(["git", "rebase", "--abort"], cwd=repo_dir, check=False)
+            sys.exit(1)
+        run(["git", "rebase", "--continue"], cwd=repo_dir)
 
-    abort_in_progress_ops(repo_dir)
-    code, _, _ = run(["git", "rebase", target_branch], cwd=repo_dir, check=False)
-    if code == 0:
-        return
+def push_branch(repo_dir: str, remote: str, branch: str, remote_branch: str):
+    run(["git", "push", "--force-with-lease", remote, f"{branch}:{remote_branch}"], cwd=repo_dir)
 
-    add_all_conflicted_files(repo_dir, take_pr_side=take_pr_side_for_others, exclude_changelog=True)
-    resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
-    continue_or_skip_rebase(repo_dir)
-
-    while True:
-        _, conflicts, _ = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
-        if not conflicts.strip():
-            break
-        add_all_conflicted_files(repo_dir, take_pr_side=take_pr_side_for_others, exclude_changelog=True)
-        resolve_changelog_conflict(repo_dir, "CHANGELOG.md", prefer_pr_on_top=prefer_pr_on_top_changelog)
-        continue_or_skip_rebase(repo_dir)
-
-def force_push(repo_dir: str, remote: str, src_local_branch: str, dest_remote_branch: str) -> None:
-    run(["git", "push", "--force-with-lease", remote, f"{src_local_branch}:{dest_remote_branch}"], cwd=repo_dir)
-
-def main() -> None:
+def main():
     import argparse
-    ap = argparse.ArgumentParser(description="Rebase PR branch onto target branch and resolve common conflicts.")
-    ap.add_argument("owner")
-    ap.add_argument("repo")
-    ap.add_argument("repo_dir")
-    ap.add_argument("--pr", type=int, required=True)
-    ap.add_argument("--target", default="main")
-    ap.add_argument("--prefer-pr-on-top-changelog", action="store_true")
-    ap.add_argument("--take-pr-side", action="store_true")
-    args = ap.parse_args()
-
-    owner, repo, repo_dir = args.owner, args.repo, args.repo_dir
-    pr_number = args.pr
-    target_branch = args.target
-    prefer_pr = args.prefer_pr_on_top_changelog
-    take_pr_side = args.take_pr_side
-
-    if not os.path.isdir(repo_dir):
-        print(f"Repository directory not found: {repo_dir}")
-        sys.exit(2)
-
-    setup_git_config(repo_dir)
-    ensure_clean_repo(repo_dir)
-
-    # Fetch PR details and set up working branch
-    pr = fetch_pr_details(owner, repo, pr_number)
-    head = pr["head"]; base = pr["base"]
-    pr_head_repo_clone = head["repo"]["clone_url"]
-    pr_head_ref = head["ref"]
-    local_branch = f"pr-{pr_number}-{pr_head_ref}"
-
-    print(f"Stalled PRs script starting...")
-    print(f"Handling Stalled PR #{pr_number}: {pr_head_ref} -> {base['ref']}")
-    checkout_pr(repo_dir, pr_head_repo_clone, pr_head_ref, local_branch)
-
-    run(["git", "fetch", "origin", target_branch], cwd=repo_dir)
-    run(["git", "checkout", local_branch], cwd=repo_dir)
-
-    rebase_pr_onto_target(repo_dir, local_branch, target_branch, prefer_pr_on_top_changelog=prefer_pr, take_pr_side_for_others=take_pr_side)
-
-    # Push back to PR head repo/branch
-    force_push(repo_dir, remote="head", src_local_branch=local_branch, dest_remote_branch=pr_head_ref)
-    abort_in_progress_ops(repo_dir)
-    print("✅ Rebase completed and force-pushed.")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("owner")
+    parser.add_argument("repo")
+    parser.add_argument("repo_dir")
+    parser.add_argument("--pr", type=int, required=True)
+    parser.add_argument("--target", default="main")
+    args = parser.parse_args()
+    git_config(args.repo_dir)
+    safe_cleanup_git_state(args.repo_dir)
+    pr = get_pr(args.owner, args.repo, args.pr)
+    pr_head_repo_clone = pr["head"]["repo"]["clone_url"]
+    pr_head_ref = pr["head"]["ref"]
+    base_ref = pr["base"]["ref"]
+    branch_name = f"pr-{args.pr}-{pr_head_ref}"
+    logging.info(f"Processing PR #{args.pr}")
+    checkout_branches(args.repo_dir, pr_head_repo_clone, pr_head_ref, branch_name)
+    run(["git", "fetch", "origin", args.target], cwd=args.repo_dir)
+    rebase_and_resolve(args.repo_dir, branch_name, args.target)
+    push_branch(args.repo_dir, "head", branch_name, pr_head_ref)
+    safe_cleanup_git_state(args.repo_dir)
+    logging.info("✅ Rebase and push complete.")
 
 if __name__ == "__main__":
     main()
