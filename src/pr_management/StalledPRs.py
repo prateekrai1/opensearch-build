@@ -18,12 +18,13 @@ HEADERS = {
 }
 
 def safe_cleanup_git_state(repo_dir):
-    for dir_name in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "MERGE_HEAD", "AM_HEAD"]:
-        path = os.path.join(repo_dir, ".git", dir_name)
+    import shutil
+    git_dir = os.path.join(repo_dir, ".git")
+    for pattern in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "MERGE_HEAD", "AM_HEAD"]:
+        path = os.path.join(git_dir, pattern)
         if os.path.exists(path):
-            logging.warning(f"Removing stale git state: {path}")
+            logging.warning(f"Cleaning up stale git state: {path}")
             if os.path.isdir(path):
-                import shutil
                 shutil.rmtree(path)
             else:
                 os.remove(path)
@@ -36,6 +37,14 @@ def safe_cleanup_git_state(repo_dir):
         subprocess.run(cmd, cwd=repo_dir, check=False)
     subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
     subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
+
+def ensure_on_branch(repo_dir, branch_name):
+    # Ensures repo is on a branch before push
+    result = subprocess.run(["git", "branch", "--show-current"], cwd=repo_dir, text=True, capture_output=True)
+    current = result.stdout.strip()
+    if not current or current != branch_name:
+        logging.info(f"Checking out branch: {branch_name}")
+        subprocess.run(["git", "checkout", branch_name], cwd=repo_dir, check=True)
 
 def run(cmd: List[str], cwd: Optional[str] = None, check=True) -> subprocess.CompletedProcess:
     logging.info(f"Running command: {' '.join(cmd)}")
@@ -57,6 +66,8 @@ def get_pr(owner: str, repo: str, pr_num: int):
     return resp.json()
 
 def checkout_branches(repo_dir: str, remote_url: str, remote_ref: str, branch: str):
+    # Remove 'head' remote if already exists
+    run(["git", "remote", "remove", "head"], cwd=repo_dir, check=False)
     run(["git", "remote", "add", "head", remote_url], cwd=repo_dir, check=False)
     run(["git", "fetch", "head", f"{remote_ref}:{branch}"], cwd=repo_dir)
     run(["git", "checkout", branch], cwd=repo_dir)
@@ -111,13 +122,14 @@ def rebase_and_resolve(repo_dir: str, pr_branch: str, target_branch: str):
     if result.returncode:
         resolve_all_conflicts(repo_dir)
         resolve_changelog(repo_dir)
-        # After resolving, check again if conflicts remain
         files = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
         if files.stdout.strip():
             logging.error("Unresolved conflicts remain, aborting.")
             run(["git", "rebase", "--abort"], cwd=repo_dir, check=False)
             sys.exit(1)
         run(["git", "rebase", "--continue"], cwd=repo_dir)
+    # Ensure we are on the branch (not detached HEAD) before push!
+    ensure_on_branch(repo_dir, pr_branch)
 
 def push_branch(repo_dir: str, remote: str, branch: str, remote_branch: str):
     run(["git", "push", "--force-with-lease", remote, f"{branch}:{remote_branch}"], cwd=repo_dir)
