@@ -26,7 +26,7 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     sh '''
-                        python3 ${SCRIPT_DIR}/StalledPRs.py <owner> <repo> ${REPO_DIR} --pr <pr_number> --target main
+                        python3 ${SCRIPT_DIR}/StalledPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR} --target main
                     '''
                 }
             }
