@@ -3,7 +3,7 @@ pipeline {
     environment {
         REPO_URL   = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'
         REPO_DIR   = 'OpenSearchFeature16099'
-        SCRIPT_DIR = 'opensearch-build/src/pr_management'
+        SCRIPT_DIR = 'opensearch-build'
     }
     stages {
         stage('Checkout Script Repo') {
@@ -26,7 +26,7 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
                     sh '''
-                        python3 ${SCRIPT_DIR}/StalledPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR} --target main
+                        python3 ${SCRIPT_DIR}/src/pr_management/StalledPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR} --target main
                     '''
                 }
             }
