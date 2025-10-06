@@ -5,7 +5,6 @@ import sys
 import subprocess
 import logging
 import requests
-from typing import List, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
 
@@ -28,29 +27,23 @@ def safe_cleanup_git_state(repo_dir):
                 shutil.rmtree(path)
             else:
                 os.remove(path)
-    for cmd in [
-        ["git", "rebase", "--abort"],
-        ["git", "cherry-pick", "--abort"],
-        ["git", "merge", "--abort"],
-        ["git", "am", "--abort"]
-    ]:
+    for cmd in [["git", "rebase", "--abort"], ["git", "cherry-pick", "--abort"], ["git", "merge", "--abort"], ["git", "am", "--abort"]]:
         subprocess.run(cmd, cwd=repo_dir, check=False)
     subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
     subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
 
 def ensure_on_branch(repo_dir, branch_name):
-    # Ensures repo is on a branch before push
     result = subprocess.run(["git", "branch", "--show-current"], cwd=repo_dir, text=True, capture_output=True)
     current = result.stdout.strip()
     if not current or current != branch_name:
         logging.info(f"Checking out branch: {branch_name}")
         subprocess.run(["git", "checkout", branch_name], cwd=repo_dir, check=True)
 
-def run(cmd: List[str], cwd: Optional[str] = None, check=True) -> subprocess.CompletedProcess:
+def run(cmd, cwd=None, check=True):
     logging.info(f"Running command: {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
 
-def git_config(repo_dir: str):
+def git_config(repo_dir):
     configs = [
         ("user.name", "OpenSearch Bot"),
         ("user.email", "opensearch-bot@amazon.com"),
@@ -59,20 +52,25 @@ def git_config(repo_dir: str):
     for key, value in configs:
         run(["git", "config", key, value], cwd=repo_dir, check=False)
 
-def get_pr(owner: str, repo: str, pr_num: int):
+def get_stalled_prs(owner, repo, label="stalled"):
+    url = f"{BASE_URL}/repos/{owner}/{repo}/pulls?state=open&labels={label}"
+    resp = requests.get(url, headers=HEADERS)
+    resp.raise_for_status()
+    return resp.json()
+
+def get_single_pr(owner, repo, pr_num):
     url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_num}"
     resp = requests.get(url, headers=HEADERS)
     resp.raise_for_status()
     return resp.json()
 
-def checkout_branches(repo_dir: str, remote_url: str, remote_ref: str, branch: str):
-    # Remove 'head' remote if already exists
+def checkout_branches(repo_dir, remote_url, remote_ref, branch):
     run(["git", "remote", "remove", "head"], cwd=repo_dir, check=False)
     run(["git", "remote", "add", "head", remote_url], cwd=repo_dir, check=False)
     run(["git", "fetch", "head", f"{remote_ref}:{branch}"], cwd=repo_dir)
     run(["git", "checkout", branch], cwd=repo_dir)
 
-def resolve_changelog(repo_dir: str, prefer_theirs=True):
+def resolve_changelog(repo_dir, prefer_theirs=True):
     path = os.path.join(repo_dir, "CHANGELOG.md")
     if not os.path.isfile(path):
         return
@@ -106,14 +104,14 @@ def resolve_changelog(repo_dir: str, prefer_theirs=True):
         f.write("\n".join(new_lines) + ("\n" if content[-1:] == "\n" else ""))
     run(["git", "add", "CHANGELOG.md"], cwd=repo_dir)
 
-def resolve_all_conflicts(repo_dir: str):
+def resolve_all_conflicts(repo_dir):
     result = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir)
     for fname in result.stdout.splitlines():
         if fname == "CHANGELOG.md": continue
         run(["git", "checkout", "--theirs", fname], cwd=repo_dir)
         run(["git", "add", fname], cwd=repo_dir)
 
-def rebase_and_resolve(repo_dir: str, pr_branch: str, target_branch: str):
+def rebase_and_resolve(repo_dir, pr_branch, target_branch):
     run(["git", "checkout", target_branch], cwd=repo_dir)
     run(["git", "pull", "--ff-only"], cwd=repo_dir)
     run(["git", "checkout", pr_branch], cwd=repo_dir)
@@ -128,10 +126,9 @@ def rebase_and_resolve(repo_dir: str, pr_branch: str, target_branch: str):
             run(["git", "rebase", "--abort"], cwd=repo_dir, check=False)
             sys.exit(1)
         run(["git", "rebase", "--continue"], cwd=repo_dir)
-    # Ensure we are on the branch (not detached HEAD) before push!
     ensure_on_branch(repo_dir, pr_branch)
 
-def push_branch(repo_dir: str, remote: str, branch: str, remote_branch: str):
+def push_branch(repo_dir, remote, branch, remote_branch):
     run(["git", "push", "--force-with-lease", remote, f"{branch}:{remote_branch}"], cwd=repo_dir)
 
 def main():
@@ -140,23 +137,29 @@ def main():
     parser.add_argument("owner")
     parser.add_argument("repo")
     parser.add_argument("repo_dir")
-    parser.add_argument("--pr", type=int, required=True)
     parser.add_argument("--target", default="main")
+    parser.add_argument("--label", default="stalled")
     args = parser.parse_args()
+
     git_config(args.repo_dir)
     safe_cleanup_git_state(args.repo_dir)
-    pr = get_pr(args.owner, args.repo, args.pr)
-    pr_head_repo_clone = pr["head"]["repo"]["clone_url"]
-    pr_head_ref = pr["head"]["ref"]
-    base_ref = pr["base"]["ref"]
-    branch_name = f"pr-{args.pr}-{pr_head_ref}"
-    logging.info(f"Processing PR #{args.pr}")
-    checkout_branches(args.repo_dir, pr_head_repo_clone, pr_head_ref, branch_name)
-    run(["git", "fetch", "origin", args.target], cwd=args.repo_dir)
-    rebase_and_resolve(args.repo_dir, branch_name, args.target)
-    push_branch(args.repo_dir, "head", branch_name, pr_head_ref)
-    safe_cleanup_git_state(args.repo_dir)
-    logging.info("✅ Rebase and push complete.")
+    stalled_prs = get_stalled_prs(args.owner, args.repo, args.label)
+    if not stalled_prs:
+        logging.info("No stalled PRs found with label '%s'", args.label)
+        return
+    for pr in stalled_prs:
+        pr_num = pr["number"]
+        pr_full = get_single_pr(args.owner, args.repo, pr_num)
+        pr_head_repo_clone = pr_full["head"]["repo"]["clone_url"]
+        pr_head_ref = pr_full["head"]["ref"]
+        branch_name = f"pr-{pr_num}-{pr_head_ref}"
+        logging.info(f"Processing PR #{pr_num}")
+        checkout_branches(args.repo_dir, pr_head_repo_clone, pr_head_ref, branch_name)
+        run(["git", "fetch", "origin", args.target], cwd=args.repo_dir)
+        rebase_and_resolve(args.repo_dir, branch_name, args.target)
+        push_branch(args.repo_dir, "head", branch_name, pr_head_ref)
+        safe_cleanup_git_state(args.repo_dir)
+        logging.info(f"✅ PR #{pr_num} rebase and push complete.")
 
 if __name__ == "__main__":
     main()
