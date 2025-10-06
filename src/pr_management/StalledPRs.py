@@ -45,8 +45,8 @@ def run(cmd, cwd=None, check=True):
 
 def git_config(repo_dir):
     configs = [
-        ("user.name", "OpenSearch Bot"),
-        ("user.email", "opensearch-bot@amazon.com"),
+        ("user.name", "prateekrai1"),
+        ("user.email", "prateekr651@gmail.com"),
         ("rerere.enabled", "true"),
     ]
     for key, value in configs:
