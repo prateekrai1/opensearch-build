@@ -115,6 +115,7 @@ def resolve_all_conflicts(repo_dir):
         run(["git", "add", fname], cwd=repo_dir)
 
 def cherry_pick_commits(repo_dir, commits, target_branch, new_branch):
+    run(["git", "fetch", "origin", target_branch], cwd=repo_dir)
     run(["git", "checkout", "-b", new_branch, target_branch], cwd=repo_dir, check=True)
     safe_cleanup_git_state(repo_dir)
     for sha in commits:
