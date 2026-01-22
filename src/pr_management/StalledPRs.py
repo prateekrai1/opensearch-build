@@ -21,18 +21,12 @@ AUTO_COMMIT_PREFIX = "[automation] resolve conflicts"
 
 def run(cmd, cwd=None, check=True):
     logging.info(f"Running: {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
+    return subprocess.run(cmd, cwd=cwd, check=check)
 
 
 def git_config(repo_dir):
-    configs = [
-        ("user.name", "prateekrai1"),
-        ("user.email", "prateekr651@gmail.com"),
-        ("rerere.enabled", "true"),
-        ("rebase.autoStash", "true"),
-    ]
-    for key, value in configs:
-        subprocess.run(["git", "config", key, value], cwd=repo_dir, check=False)
+    subprocess.run(["git", "config", "user.name", "prateekrai1"], cwd=repo_dir)
+    subprocess.run(["git", "config", "user.email", "prateekr651@gmail.com"], cwd=repo_dir)
 
 
 def gh(method, url, **kwargs):
@@ -53,19 +47,53 @@ def remove_label(owner, repo, pr, label):
     gh("DELETE", f"/repos/{owner}/{repo}/issues/{pr}/labels/{label}")
 
 
-def last_commit_is_auto(repo_dir):
-    msg = subprocess.run(
-        ["git", "log", "-1", "--pretty=%s"],
-        cwd=repo_dir,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    return msg.startswith(AUTO_COMMIT_PREFIX)
+def resolve_changelog_conflicts(path="CHANGELOG.md"):
+    resolved = []
+    left, right = [], []
+    in_conflict = False
+    side = None
+
+    with open(path, "r") as f:
+        for line in f:
+            if line.startswith("<<<<<<<"):
+                in_conflict = True
+                left, right = [], []
+                side = "left"
+                continue
+            if line.startswith("=======") and in_conflict:
+                side = "right"
+                continue
+            if line.startswith(">>>>>>>") and in_conflict:
+                resolved.extend(left)
+                resolved.extend(right)
+                in_conflict = False
+                side = None
+                continue
+
+            if in_conflict:
+                (left if side == "left" else right).append(line)
+            else:
+                resolved.append(line)
+
+    with open(path, "w") as f:
+        f.writelines(resolved)
 
 
 def resolve_conflicts(repo_dir):
-    subprocess.run(["git", "checkout", "--theirs", "."], cwd=repo_dir)
-    subprocess.run(["git", "add", "."], cwd=repo_dir)
+    files = subprocess.check_output(
+        ["git", "diff", "--name-only", "--diff-filter=U"],
+        cwd=repo_dir,
+        text=True,
+    ).splitlines()
+
+    for f in files:
+        if f == "CHANGELOG.md":
+            resolve_changelog_conflicts(os.path.join(repo_dir, f))
+        else:
+            subprocess.run(["git", "checkout", "--theirs", f], cwd=repo_dir)
+
+        subprocess.run(["git", "add", f], cwd=repo_dir)
+
     subprocess.run(
         ["git", "commit", "-m", AUTO_COMMIT_PREFIX],
         cwd=repo_dir,
@@ -93,10 +121,8 @@ def main():
 
         try:
             branch = pr["head"]["ref"]
-            repo_url = pr["head"]["repo"]["clone_url"]
-
-            run(["git", "fetch", repo_url, branch], cwd=repo_dir)
-            run(["git", "checkout", branch], cwd=repo_dir)
+            run(["git", "fetch", "origin", branch], repo_dir)
+            run(["git", "checkout", branch], repo_dir)
 
             r = subprocess.run(
                 ["git", "rebase", f"origin/{target}"],
@@ -104,13 +130,10 @@ def main():
             )
 
             if r.returncode:
-                if last_commit_is_auto(repo_dir):
-                    raise RuntimeError("Rebase loop detected")
-
                 resolve_conflicts(repo_dir)
-                run(["git", "rebase", "--continue"], cwd=repo_dir)
+                run(["git", "rebase", "--continue"], repo_dir)
 
-            run(["git", "push", "--force-with-lease"], cwd=repo_dir)
+            run(["git", "push", "--force-with-lease"], repo_dir)
 
         except Exception as e:
             logging.error(str(e))

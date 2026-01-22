@@ -22,7 +22,7 @@ AUTO_COMMIT_PREFIX = "[automation] resolve conflicts"
 
 def run(cmd, cwd=None, check=True):
     logging.info(f"Running: {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
+    return subprocess.run(cmd, cwd=cwd, check=check)
 
 
 def git_config(repo_dir):
@@ -32,8 +32,8 @@ def git_config(repo_dir):
         ("rerere.enabled", "true"),
         ("rebase.autoStash", "true"),
     ]
-    for key, value in configs:
-        subprocess.run(["git", "config", key, value], cwd=repo_dir, check=False)
+    for k, v in configs:
+        subprocess.run(["git", "config", k, v], cwd=repo_dir, check=False)
 
 
 def gh(method, url, **kwargs):
@@ -54,38 +54,57 @@ def remove_label(owner, repo, pr, label):
     gh("DELETE", f"/repos/{owner}/{repo}/issues/{pr}/labels/{label}")
 
 
-def safe_cleanup_git_state(repo_dir):
-    git_dir = os.path.join(repo_dir, ".git")
-    for p in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "MERGE_HEAD"]:
-        path = os.path.join(git_dir, p)
-        if os.path.exists(path):
-            shutil.rmtree(path, ignore_errors=True)
-
+def safe_cleanup(repo_dir):
     subprocess.run(["git", "cherry-pick", "--abort"], cwd=repo_dir, check=False)
     subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
     subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
 
 
-def last_commit_is_auto(repo_dir):
-    msg = subprocess.run(
-        ["git", "log", "-1", "--pretty=%s"],
-        cwd=repo_dir,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    return msg.startswith(AUTO_COMMIT_PREFIX)
+def resolve_changelog_conflicts(path="CHANGELOG.md"):
+    resolved = []
+    left, right = [], []
+    in_conflict = False
+    side = None
+
+    with open(path, "r") as f:
+        for line in f:
+            if line.startswith("<<<<<<<"):
+                in_conflict = True
+                left, right = [], []
+                side = "left"
+                continue
+            if line.startswith("=======") and in_conflict:
+                side = "right"
+                continue
+            if line.startswith(">>>>>>>") and in_conflict:
+                resolved.extend(left)
+                resolved.extend(right)
+                in_conflict = False
+                side = None
+                continue
+
+            if in_conflict:
+                (left if side == "left" else right).append(line)
+            else:
+                resolved.append(line)
+
+    with open(path, "w") as f:
+        f.writelines(resolved)
 
 
 def resolve_conflicts(repo_dir):
-    files = subprocess.run(
+    files = subprocess.check_output(
         ["git", "diff", "--name-only", "--diff-filter=U"],
         cwd=repo_dir,
-        capture_output=True,
         text=True,
-    ).stdout.splitlines()
+    ).splitlines()
 
     for f in files:
-        subprocess.run(["git", "checkout", "--theirs", f], cwd=repo_dir)
+        if f == "CHANGELOG.md":
+            resolve_changelog_conflicts(os.path.join(repo_dir, f))
+        else:
+            subprocess.run(["git", "checkout", "--theirs", f], cwd=repo_dir)
+
         subprocess.run(["git", "add", f], cwd=repo_dir)
 
     subprocess.run(
@@ -97,8 +116,9 @@ def resolve_conflicts(repo_dir):
 
 def main():
     owner, repo, repo_dir, target = sys.argv[1:5]
+
     git_config(repo_dir)
-    safe_cleanup_git_state(repo_dir)
+    safe_cleanup(repo_dir)
 
     prs = gh("GET", f"/repos/{owner}/{repo}/pulls?state=open&labels=backport")
 
@@ -106,7 +126,6 @@ def main():
         pr_num = pr["number"]
 
         if has_label(pr, LOCK_LABEL) or has_label(pr, FAIL_LABEL):
-            logging.info(f"Skipping PR #{pr_num}")
             continue
 
         add_label(owner, repo, pr_num, LOCK_LABEL)
@@ -114,24 +133,18 @@ def main():
         try:
             commits = gh("GET", f"/repos/{owner}/{repo}/pulls/{pr_num}/commits")
 
-            run(["git", "checkout", target], cwd=repo_dir)
-            run(["git", "pull"], cwd=repo_dir)
+            run(["git", "checkout", target], repo_dir)
+            run(["git", "pull"], repo_dir)
 
             branch = f"backport-pr-{pr_num}"
-            run(["git", "checkout", "-b", branch], cwd=repo_dir)
+            run(["git", "checkout", "-B", branch], repo_dir)
 
             for c in commits:
                 r = subprocess.run(["git", "cherry-pick", c["sha"]], cwd=repo_dir)
                 if r.returncode:
-                    if last_commit_is_auto(repo_dir):
-                        raise RuntimeError("Conflict loop detected")
-
                     resolve_conflicts(repo_dir)
 
-            run(
-                ["git", "push", "--force-with-lease", "origin", branch],
-                cwd=repo_dir,
-            )
+            run(["git", "push", "--force-with-lease", "origin", branch], repo_dir)
 
         except Exception as e:
             logging.error(str(e))
