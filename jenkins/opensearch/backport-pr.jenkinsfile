@@ -31,7 +31,7 @@ pipeline {
         stage('Run Backport Automation') {
             steps {
                 lock(resource: 'pr-automation-lock') {
-                    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    withCredentials([string(credentialsId: 'github_token', variable: 'GITHUB_TOKEN')]) {
                         sh '''
                             python3 ${SCRIPT_DIR}/src/pr_management/BackportPRs.py \
                                 prateekrai1 \
