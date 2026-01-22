@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import os
 import sys
 import subprocess
@@ -16,150 +14,110 @@ HEADERS = {
     "Authorization": f"Bearer {GITHUB_TOKEN}" if GITHUB_TOKEN else "",
 }
 
-def safe_cleanup_git_state(repo_dir):
-    import shutil
-    git_dir = os.path.join(repo_dir, ".git")
-    for pattern in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "MERGE_HEAD", "AM_HEAD"]:
-        path = os.path.join(git_dir, pattern)
-        if os.path.exists(path):
-            logging.warning(f"Cleaning up stale git state: {path}")
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-            else:
-                os.remove(path)
-    for cmd in [["git", "rebase", "--abort"], ["git", "cherry-pick", "--abort"], ["git", "merge", "--abort"], ["git", "am", "--abort"]]:
-        subprocess.run(cmd, cwd=repo_dir, check=False)
-    subprocess.run(["git", "reset", "--hard"], cwd=repo_dir, check=False)
-    subprocess.run(["git", "clean", "-fd"], cwd=repo_dir, check=False)
+LOCK_LABEL = "automation-in-progress"
+FAIL_LABEL = "automation-conflict"
+AUTO_COMMIT_PREFIX = "[automation] resolve conflicts"
 
-def ensure_on_branch(repo_dir, branch_name):
-    result = subprocess.run(["git", "branch", "--show-current"], cwd=repo_dir, text=True, capture_output=True)
-    current = result.stdout.strip()
-    if not current or current != branch_name:
-        logging.info(f"Checking out branch: {branch_name}")
-        subprocess.run(["git", "checkout", branch_name], cwd=repo_dir, check=True)
 
 def run(cmd, cwd=None, check=True):
-    logging.info(f"Running command: {' '.join(cmd)}")
+    logging.info(f"Running: {' '.join(cmd)}")
     return subprocess.run(cmd, cwd=cwd, check=check, text=True, capture_output=True)
+
 
 def git_config(repo_dir):
     configs = [
         ("user.name", "prateekrai1"),
         ("user.email", "prateekr651@gmail.com"),
         ("rerere.enabled", "true"),
+        ("rebase.autoStash", "true"),
     ]
     for key, value in configs:
-        run(["git", "config", key, value], cwd=repo_dir, check=False)
+        subprocess.run(["git", "config", key, value], cwd=repo_dir, check=False)
 
-def get_stalled_prs(owner, repo, label="stalled"):
-    url = f"{BASE_URL}/repos/{owner}/{repo}/pulls?state=open&labels={label}"
-    resp = requests.get(url, headers=HEADERS)
-    resp.raise_for_status()
-    return resp.json()
 
-def get_single_pr(owner, repo, pr_num):
-    url = f"{BASE_URL}/repos/{owner}/{repo}/pulls/{pr_num}"
-    resp = requests.get(url, headers=HEADERS)
-    resp.raise_for_status()
-    return resp.json()
+def gh(method, url, **kwargs):
+    r = requests.request(method, f"{BASE_URL}{url}", headers=HEADERS, **kwargs)
+    r.raise_for_status()
+    return r.json() if r.text else None
 
-def checkout_branches(repo_dir, remote_url, remote_ref, branch):
-    run(["git", "remote", "remove", "head"], cwd=repo_dir, check=False)
-    run(["git", "remote", "add", "head", remote_url], cwd=repo_dir, check=False)
-    run(["git", "fetch", "head", f"{remote_ref}:{branch}"], cwd=repo_dir)
-    run(["git", "checkout", branch], cwd=repo_dir)
 
-def resolve_changelog(repo_dir, prefer_theirs=True):
-    path = os.path.join(repo_dir, "CHANGELOG.md")
-    if not os.path.isfile(path):
-        return
-    with open(path) as f:
-        content = f.read()
-    if "<<<<<<< " not in content:
-        return
-    lines = content.splitlines()
-    new_lines = []
-    i = 0
-    while i < len(lines):
-        if lines[i].startswith("<<<<<<< "):
-            ours, theirs = [], []
-            i += 1
-            while i < len(lines) and not lines[i].startswith("======="):
-                ours.append(lines[i]); i += 1
-            i += 1
-            while i < len(lines) and not lines[i].startswith(">>>>>>> "):
-                theirs.append(lines[i]); i += 1
-            i += 1
-            if prefer_theirs:
-                new_lines.extend(theirs)
-                new_lines.extend(ours)
-            else:
-                new_lines.extend(ours)
-                new_lines.extend(theirs)
-        else:
-            new_lines.append(lines[i])
-            i += 1
-    with open(path, "w") as f:
-        f.write("\n".join(new_lines) + ("\n" if content[-1:] == "\n" else ""))
-    run(["git", "add", "CHANGELOG.md"], cwd=repo_dir)
+def has_label(pr, label):
+    return any(l["name"] == label for l in pr["labels"])
 
-def resolve_all_conflicts(repo_dir):
-    result = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir)
-    for fname in result.stdout.splitlines():
-        if fname == "CHANGELOG.md": continue
-        run(["git", "checkout", "--theirs", fname], cwd=repo_dir)
-        run(["git", "add", fname], cwd=repo_dir)
 
-def rebase_and_resolve(repo_dir, pr_branch, target_branch):
-    run(["git", "checkout", target_branch], cwd=repo_dir)
-    run(["git", "pull", "--ff-only"], cwd=repo_dir)
-    run(["git", "checkout", pr_branch], cwd=repo_dir)
-    safe_cleanup_git_state(repo_dir)
-    result = run(["git", "rebase", target_branch], cwd=repo_dir, check=False)
-    if result.returncode:
-        resolve_all_conflicts(repo_dir)
-        resolve_changelog(repo_dir)
-        files = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=repo_dir, check=False)
-        if files.stdout.strip():
-            logging.error("Unresolved conflicts remain, aborting.")
-            run(["git", "rebase", "--abort"], cwd=repo_dir, check=False)
-            sys.exit(1)
-        run(["git", "rebase", "--continue"], cwd=repo_dir)
-    ensure_on_branch(repo_dir, pr_branch)
+def add_label(owner, repo, pr, label):
+    gh("POST", f"/repos/{owner}/{repo}/issues/{pr}/labels", json={"labels": [label]})
 
-def push_branch(repo_dir, remote, branch, remote_branch):
-    run(["git", "push", "--force-with-lease", remote, f"{branch}:{remote_branch}"], cwd=repo_dir)
+
+def remove_label(owner, repo, pr, label):
+    gh("DELETE", f"/repos/{owner}/{repo}/issues/{pr}/labels/{label}")
+
+
+def last_commit_is_auto(repo_dir):
+    msg = subprocess.run(
+        ["git", "log", "-1", "--pretty=%s"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    return msg.startswith(AUTO_COMMIT_PREFIX)
+
+
+def resolve_conflicts(repo_dir):
+    subprocess.run(["git", "checkout", "--theirs", "."], cwd=repo_dir)
+    subprocess.run(["git", "add", "."], cwd=repo_dir)
+    subprocess.run(
+        ["git", "commit", "-m", AUTO_COMMIT_PREFIX],
+        cwd=repo_dir,
+        check=True,
+    )
+
 
 def main():
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("owner")
-    parser.add_argument("repo")
-    parser.add_argument("repo_dir")
-    parser.add_argument("--target", default="main")
-    parser.add_argument("--label", default="stalled")
-    args = parser.parse_args()
+    owner, repo, repo_dir, target = sys.argv[1:5]
 
-    git_config(args.repo_dir)
-    safe_cleanup_git_state(args.repo_dir)
-    stalled_prs = get_stalled_prs(args.owner, args.repo, args.label)
-    if not stalled_prs:
-        logging.info("No stalled PRs found with label '%s'", args.label)
-        return
-    for pr in stalled_prs:
+    git_config(repo_dir)
+
+    prs = gh("GET", f"/repos/{owner}/{repo}/pulls?state=open&labels=stalled")
+
+    for pr in prs:
         pr_num = pr["number"]
-        pr_full = get_single_pr(args.owner, args.repo, pr_num)
-        pr_head_repo_clone = pr_full["head"]["repo"]["clone_url"]
-        pr_head_ref = pr_full["head"]["ref"]
-        branch_name = f"pr-{pr_num}-{pr_head_ref}"
-        logging.info(f"Processing PR #{pr_num}")
-        checkout_branches(args.repo_dir, pr_head_repo_clone, pr_head_ref, branch_name)
-        run(["git", "fetch", "origin", args.target], cwd=args.repo_dir)
-        rebase_and_resolve(args.repo_dir, branch_name, args.target)
-        push_branch(args.repo_dir, "head", branch_name, pr_head_ref)
-        safe_cleanup_git_state(args.repo_dir)
-        logging.info(f"✅ PR #{pr_num} rebase and push complete.")
+
+        if has_label(pr, "backport"):
+            continue
+
+        if has_label(pr, LOCK_LABEL) or has_label(pr, FAIL_LABEL):
+            continue
+
+        add_label(owner, repo, pr_num, LOCK_LABEL)
+
+        try:
+            branch = pr["head"]["ref"]
+            repo_url = pr["head"]["repo"]["clone_url"]
+
+            run(["git", "fetch", repo_url, branch], cwd=repo_dir)
+            run(["git", "checkout", branch], cwd=repo_dir)
+
+            r = subprocess.run(
+                ["git", "rebase", f"origin/{target}"],
+                cwd=repo_dir,
+            )
+
+            if r.returncode:
+                if last_commit_is_auto(repo_dir):
+                    raise RuntimeError("Rebase loop detected")
+
+                resolve_conflicts(repo_dir)
+                run(["git", "rebase", "--continue"], cwd=repo_dir)
+
+            run(["git", "push", "--force-with-lease"], cwd=repo_dir)
+
+        except Exception as e:
+            logging.error(str(e))
+            add_label(owner, repo, pr_num, FAIL_LABEL)
+        finally:
+            remove_label(owner, repo, pr_num, LOCK_LABEL)
+
 
 if __name__ == "__main__":
     main()

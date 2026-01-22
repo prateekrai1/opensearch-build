@@ -1,12 +1,15 @@
 pipeline {
     agent any
+
     environment {
-        REPO_URL   = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'  
-        REPO_DIR   = 'OpenSearchFeature16099'
-        SCRIPT_DIR = 'opensearch-build'
-        TARGET_BRANCH = '2.x-maintenance'    
+        REPO_URL      = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'
+        REPO_DIR      = 'OpenSearchFeature16099'
+        SCRIPT_DIR    = 'opensearch-build'
+        TARGET_BRANCH = '2.x-maintenance'
     }
+
     stages {
+
         stage('Checkout Script Repo') {
             steps {
                 sh '''
@@ -15,6 +18,7 @@ pipeline {
                 '''
             }
         }
+
         stage('Checkout Target Repo') {
             steps {
                 sh '''
@@ -23,16 +27,24 @@ pipeline {
                 '''
             }
         }
-        stage('Process Backport PRs') {
+
+        stage('Run Backport Automation') {
             steps {
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    sh '''
-                        python3 ${SCRIPT_DIR}/src/pr_management/BackportPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR} --target ${TARGET_BRANCH}
-                    '''
+                lock(resource: 'pr-automation-lock') {
+                    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                        sh '''
+                            python3 ${SCRIPT_DIR}/src/pr_management/BackportPRs.py \
+                                prateekrai1 \
+                                OpenSearchFeature16099 \
+                                ${REPO_DIR} \
+                                ${TARGET_BRANCH}
+                        '''
+                    }
                 }
             }
         }
     }
+
     post {
         always {
             cleanWs()

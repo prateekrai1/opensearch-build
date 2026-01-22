@@ -1,11 +1,15 @@
 pipeline {
     agent any
+
     environment {
-        REPO_URL   = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'
-        REPO_DIR   = 'OpenSearchFeature16099'
-        SCRIPT_DIR = 'opensearch-build'
+        REPO_URL      = 'https://github.com/prateekrai1/OpenSearchFeature16099.git'
+        REPO_DIR      = 'OpenSearchFeature16099'
+        SCRIPT_DIR    = 'opensearch-build'
+        TARGET_BRANCH = 'main'
     }
+
     stages {
+
         stage('Checkout Script Repo') {
             steps {
                 sh '''
@@ -14,6 +18,7 @@ pipeline {
                 '''
             }
         }
+
         stage('Checkout Target Repo') {
             steps {
                 sh '''
@@ -22,16 +27,24 @@ pipeline {
                 '''
             }
         }
-        stage('Process Stalled PR') {
+
+        stage('Run Stalled PR Automation') {
             steps {
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-                    sh '''
-                        python3 ${SCRIPT_DIR}/src/pr_management/StalledPRs.py prateekrai1 OpenSearchFeature16099 ${REPO_DIR} --target main
-                    '''
+                lock(resource: 'pr-automation-lock') {
+                    withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                        sh '''
+                            python3 ${SCRIPT_DIR}/src/pr_management/StalledPRs.py \
+                                prateekrai1 \
+                                OpenSearchFeature16099 \
+                                ${REPO_DIR} \
+                                ${TARGET_BRANCH}
+                        '''
+                    }
                 }
             }
         }
     }
+
     post {
         always {
             cleanWs()
